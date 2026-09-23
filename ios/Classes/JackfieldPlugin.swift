@@ -18,7 +18,7 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
   })
   private var tokensSink: FlutterEventSink?
   private var pushToken: String?
-  private var lastError: String?
+  private var diagnosticError = DiagnosticErrorState()
 
   private override init() {
     store = Self.backgroundRuntime.store
@@ -27,7 +27,7 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
       controller = IOSCallController(store: store) { [weak self] event in self?.publish(event) }
       startPushRegistry()
     } else {
-      lastError = "platformFailure"
+      diagnosticError.record("platformFailure")
     }
   }
 
@@ -99,6 +99,7 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
         case "acknowledgeEvents":
           guard let ids = data["eventIds"] as? [String], ids.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else { throw JackfieldCoreError.protocolFailure }
           try await store.acknowledgeFlutter(Set(ids))
+          if !ids.isEmpty { self.diagnosticError.acknowledgeFlutter() }
           result(Self.success(NSNull()))
         case "pushTokens":
           result(Self.success(["tokens": self.pushToken.map { [["provider": "apns", "value": $0]] } ?? []]))
@@ -106,7 +107,7 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
         }
       } catch {
         let code = Self.code(error)
-        self.lastError = code
+        self.diagnosticError.record(code)
         if call.method == "capabilities" || call.method == "diagnostics" { result(FlutterError(code: code, message: nil, details: nil)) }
         else { result(Self.failure(code)) }
       }
@@ -147,7 +148,7 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
   }
   private func startReplay(_ sink: @escaping FlutterEventSink) {
     replaySession.start(onEvent: { sink($0.toWire()) }, onFailure: { [weak self] in
-      self?.lastError = "platformFailure"
+      self?.diagnosticError.record("platformFailure")
       sink(FlutterError(code: "platformFailure", message: "Durable event replay unavailable", details: nil))
       sink(FlutterEndOfEventStream)
     })
@@ -158,11 +159,11 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
   }
   private func diagnostics(_ store: EventStore) async throws -> [String: Any] {
     let dropped = try await store.httpCapacityDroppedCount()
-    let diagnosticError = dropped > 0 ? "storageFull" : lastError
+    let error = diagnosticError.visibleError(activeCapacityDrops: dropped)
     return ["version": 1, "mechanism": "nativeCallUi", "permissions": ["voipPush": "unknown"],
      "pendingFlutterEvents": try await store.pendingFlutterCount(), "pendingHttpEvents": try await store.pendingHTTPCount(),
      "httpPausedForAuthentication": try await store.httpPausedForAuthentication(),
-     "lastError": diagnosticError.map { ["code": $0] } ?? NSNull()] as [String: Any]
+     "lastError": error.map { ["code": $0] } ?? NSNull()] as [String: Any]
   }
   private static func success(_ value: Any) -> [String: Any] { ["version": 1, "status": "success", "value": value] }
   private static func failure(_ code: String) -> [String: Any] { ["version": 1, "status": "failure", "error": ["code": code]] }

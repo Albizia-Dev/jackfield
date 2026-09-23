@@ -217,7 +217,13 @@ public actor EventStore {
     }
     return result
   }
-  public func acknowledgeFlutter(_ ids: Set<String>) throws { try transaction { for id in ids { try run("UPDATE events SET flutter_ack=1 WHERE event_id=?", [id]) } } }
+  public func acknowledgeFlutter(_ ids: Set<String>) throws {
+    try transaction {
+      for id in ids {
+        try run("UPDATE events SET flutter_ack=1,http_state=CASE WHEN http_state='capacity_dropped' THEN 'capacity_acknowledged' ELSE http_state END WHERE event_id=?", [id])
+      }
+    }
+  }
   public func acknowledgeHTTP(_ ids: Set<String>) throws { try transaction { for id in ids { try run("UPDATE events SET http_state='acknowledged' WHERE event_id=?", [id]) } } }
   public func resolveAnswer(_ actionId: String, succeeded: Bool, eventId: String, at now: Date) throws -> (receipt: ActionReceipt, ended: WireEnvelope?) {
     try transaction {
@@ -267,6 +273,13 @@ public actor EventStore {
       guard endpoint.hasPrefix("https://"), ttl > 0 else { throw JackfieldCoreError.protocolFailure }
     } else if endpoint != nil || ttl != nil { throw JackfieldCoreError.protocolFailure }
     try transaction {
+      let surplus = try pendingHTTPCount() - limit
+      if surplus > 0 {
+        let stmt = try statement("UPDATE events SET http_state='capacity_dropped' WHERE event_id IN (SELECT event_id FROM events WHERE http_state='pending' ORDER BY rowid DESC LIMIT ?)")
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int64(stmt, 1, Int64(surplus))
+        guard sqlite3_step(stmt) == SQLITE_DONE else { throw JackfieldCoreError.platformFailure }
+      }
       try run("INSERT OR REPLACE INTO settings(key,value) VALUES('http_limit',?)", [String(limit)])
       try run("INSERT OR REPLACE INTO settings(key,value) VALUES('http_enabled','1')", [])
       if let endpoint, let ttl {

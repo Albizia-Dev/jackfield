@@ -239,4 +239,72 @@ final class EventStoreTests: XCTestCase {
     XCTAssertTrue(http.isEmpty)
     XCTAssertEqual(dropped, 0)
   }
+
+  func testLoweringCallbackLimitKeepsOldestPendingRowsAndFlutterReceipts() async throws {
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let store = try EventStore(path: path)
+    try await store.configureHTTP(limit: 4, endpoint: "https://example.test/hook", ttl: 60)
+    for index in 1...4 {
+      let event = try WireEnvelope.ended(callId: "call-\(index)", eventId: "event-\(index)", sequence: 0,
+                                         occurredAt: Date(timeIntervalSince1970: Double(100 + index)), reason: "remote")
+      try await store.append(event)
+    }
+    try await store.acknowledgeFlutter(["event-3"])
+
+    try await store.configureHTTP(limit: 2)
+    let reopened = try EventStore(path: path)
+    let configuration = try await reopened.httpConfiguration()
+    let pending = try await reopened.pendingHTTP()
+    let pendingCount = try await reopened.pendingHTTPCount()
+    let droppedCount = try await reopened.httpCapacityDroppedCount()
+    let flutter = try await reopened.pendingFlutter()
+    let thirdCall = try await reopened.allEvents(for: "call-3")
+    let fourthCall = try await reopened.allEvents(for: "call-4")
+    let ready = try await reopened.readyHTTP(at: Date(timeIntervalSince1970: 200))
+    XCTAssertEqual(configuration?.limit, 2)
+    XCTAssertEqual(pending.map(\.eventId), ["event-1", "event-2"])
+    XCTAssertEqual(pendingCount, 2)
+    XCTAssertEqual(droppedCount, 2)
+    XCTAssertEqual(flutter.map(\.eventId), ["event-1", "event-2", "event-4"])
+    XCTAssertEqual(thirdCall.map(\.eventId), ["event-3"])
+    XCTAssertEqual(fourthCall.map(\.eventId), ["event-4"])
+    XCTAssertEqual(ready.map(\.eventId), ["event-1", "event-2"])
+
+    try await reopened.acknowledgeFlutter(["event-4"])
+    let afterFourthFlutterACK = try await reopened.httpCapacityDroppedCount()
+    XCTAssertEqual(afterFourthFlutterACK, 1)
+    try await reopened.acknowledgeFlutter(["event-3"])
+    let afterAllFlutterACKs = try await reopened.httpCapacityDroppedCount()
+    XCTAssertEqual(afterAllFlutterACKs, 0)
+
+    try await reopened.acknowledgeHTTP(["event-1"])
+    let afterHTTPAck = try await reopened.pendingHTTP()
+    XCTAssertEqual(afterHTTPAck.map(\.eventId), ["event-2"])
+    let replacement = try WireEnvelope.ended(callId: "call-5", eventId: "event-5", sequence: 0,
+                                              occurredAt: Date(timeIntervalSince1970: 105), reason: "local")
+    try await reopened.append(replacement)
+    let afterReplacement = try await reopened.pendingHTTP()
+    XCTAssertEqual(afterReplacement.map(\.eventId), ["event-2", "event-5"])
+  }
+
+  func testFlutterAckRetiresCapacityDropFromActiveDiagnostics() async throws {
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let store = try EventStore(path: path)
+    try await store.configureHTTP(limit: 1)
+    try await store.save(snapshot: CallRecord(callId: "call-1", state: "ringing", media: "audio"))
+    _ = try await store.saveEnded(callId: "call-1", eventId: "event-1", reason: "remote", at: Date())
+    try await store.save(snapshot: CallRecord(callId: "call-2", state: "ringing", media: "audio"))
+    _ = try await store.saveEnded(callId: "call-2", eventId: "event-2", reason: "remote", at: Date())
+    let beforeACK = try await store.httpCapacityDroppedCount()
+    XCTAssertEqual(beforeACK, 1)
+    try await store.acknowledgeFlutter(["event-2"])
+    let afterACK = try await store.httpCapacityDroppedCount()
+    let pending = try await store.pendingHTTP()
+    let retainedEvent = try await store.allEvents(for: "call-2")
+    XCTAssertEqual(afterACK, 0)
+    XCTAssertEqual(pending.map(\.eventId), ["event-1"])
+    XCTAssertEqual(retainedEvent.map(\.eventId), ["event-2"])
+  }
 }
