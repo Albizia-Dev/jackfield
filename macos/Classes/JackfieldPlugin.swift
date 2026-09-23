@@ -26,16 +26,20 @@ public final class JackfieldPlugin: NSObject, @preconcurrency FlutterPlugin {
     else { lastError = "platformFailure" }
   }
 
-  public static func register(with registrar: FlutterPluginRegistrar) {
-    let instance = JackfieldPlugin()
-    let channel = FlutterMethodChannel(name: "jackfield", binaryMessenger: registrar.messenger)
-    registrar.addMethodCallDelegate(instance, channel: channel)
-    FlutterEventChannel(name: "jackfield/events", binaryMessenger: registrar.messenger).setStreamHandler(
-      MacOSStreamHandler(onListen: { [weak instance] sink in
-        instance?.startReplay(sink)
-      }, onCancel: { [weak instance] in instance?.stopReplay() }))
-    FlutterEventChannel(name: "jackfield/push_token_updates", binaryMessenger: registrar.messenger).setStreamHandler(
-      MacOSStreamHandler(onListen: { _ in }, onCancel: {}))
+  nonisolated public static func register(with registrar: FlutterPluginRegistrar) {
+    // Flutter invokes registration synchronously on the main thread.
+    // Keep setup isolated even though the generated registrant is nonisolated.
+    MainActor.assumeIsolated {
+      let instance = JackfieldPlugin()
+      let channel = FlutterMethodChannel(name: "jackfield", binaryMessenger: registrar.messenger)
+      registrar.addMethodCallDelegate(instance, channel: channel)
+      FlutterEventChannel(name: "jackfield/events", binaryMessenger: registrar.messenger).setStreamHandler(
+        MacOSStreamHandler(onListen: { [weak instance] sink in
+          instance?.startReplay(sink)
+        }, onCancel: { [weak instance] in instance?.stopReplay() }))
+      FlutterEventChannel(name: "jackfield/push_token_updates", binaryMessenger: registrar.messenger).setStreamHandler(
+        MacOSStreamHandler(onListen: { _ in }, onCancel: {}))
+    }
   }
 
   public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
