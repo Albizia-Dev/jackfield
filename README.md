@@ -83,45 +83,20 @@ await calls.initialize(JackfieldConfiguration(
   ),
 ));
 
-// tokenStore — устойчивое хранилище приложения с replaceAll/apply.
-final buffered = <PushTokenUpdate>[];
-var bootstrapping = true;
-Future<void> writes = Future<void>.value();
-void enqueue(PushTokenUpdate update) {
-  writes = writes.then((_) => tokenStore.apply(update));
-}
-final updates = calls.pushTokenUpdates.listen(
-  (update) {
-    if (bootstrapping) {
-      buffered.add(update);
-    } else {
-      enqueue(update);
-    }
-  },
-  // Планировщик сверяет полный снимок после уже поставленных в очередь записей.
-  onError: (Object _) => tokenStore.scheduleFullReconciliation(),
-);
-final tokens = await calls.pushTokens();
-if (tokens case JackfieldSuccess<PushTokenSnapshot>(:final value)) {
-  await tokenStore.replaceAll(value.tokens); // Сначала снимок.
-  for (final update in buffered) {
-    enqueue(update); // Затем буфер в порядке поступления.
-  }
-  buffered.clear();
-  bootstrapping = false; // Далее обновления попадают в ту же очередь записи.
-  await writes;
-} else {
-  await updates.cancel();
-  tokenStore.scheduleFullReconciliation();
-}
 final diagnostics = await calls.diagnostics();
 print(diagnostics.pendingFlutterEvents);
 print(diagnostics.pendingHttpEvents);
 print(diagnostics.httpPausedForAuthentication);
-// На logout/dispose: await updates.cancel().
 ```
 
-Используйте HTTPS endpoint и отдельный узко ограниченный bearer token. Смена endpoint/token повторной `initialize` возобновляет очередь после `401/403`; сама Flutter-подписка не нужна для разрешённого платформой фонового callback. `pushTokens()` не запрашивает разрешение. Поток не содержит revision/timestamp и не даёт атомарной границы подписки со снимком: после ошибки потока, restart и периодически сверяйте полный снимок с сервером. Получение FCM/APNs/Web Push настраивает host-приложение; см. [push](docs/push.md) и [callbacks](docs/http-callbacks.md). Перед действием проверьте `capabilities()`; `diagnostics()` даёт безопасный снимок очередей и разрешений без секретов. [Матрица возможностей](docs/capabilities.md) отдельно описывает реализацию и ограничения проверок.
+Согласование push-токенов реализуйте одним владельцем подписки и последовательной очереди записей:
+
+1. Подпишитесь на `pushTokenUpdates` и буферизуйте `PushTokenUpdate`, пока ожидаете `pushTokens()` (с ограниченным временем ожидания). Если пришёл `JackfieldFailure<PushTokenSnapshot>`, ошибка потока или истёк timeout, переходите к шагу 4.
+2. В той же очереди дождитесь полного сохранения `PushTokenSnapshot.tokens`. Во время записи продолжайте буферизацию. Затем **без `await` между операциями** поставьте весь буфер в очередь в порядке получения и переключите обработчик на добавление live-обновлений в ту же очередь. Так снимок не перезапишет уже доставленную ротацию.
+3. Каждую операцию очереди обрабатывайте с `try/catch`; ошибка записи останавливает цикл и ведёт к шагу 4. Удаление (`removed == true`) применяйте как удаление, а не как новый токен.
+4. Пометьте поколение цикла недействительным; после каждого `await` сверяйте его до новой записи. Отмените прежнюю подписку, дождитесь завершения текущей записи, отбросьте её ожидающие операции и поздний результат старого `pushTokens()`; только затем после ограниченной паузы с backoff запустите **новый** цикл с новой подпиской и новым снимком. Старый цикл не может записать данные после нового. На logout остановите цикл; после restart и периодически запускайте полный цикл сверки с сервером.
+
+Поток не содержит revision/timestamp и не даёт атомарной границы начала подписки со снимком; даже этот порядок не доказывает отсутствие пропуска. `pushTokens()` не запрашивает разрешение. Используйте HTTPS endpoint и отдельный узко ограниченный bearer token. Смена endpoint/token повторной `initialize` возобновляет очередь после `401/403`; сама Flutter-подписка не нужна для разрешённого платформой фонового callback. Получение FCM/APNs/Web Push настраивает host-приложение; см. [push](docs/push.md) и [callbacks](docs/http-callbacks.md). Перед действием проверьте `capabilities()`; `diagnostics()` даёт безопасный снимок очередей и разрешений без секретов. [Матрица возможностей](docs/capabilities.md) отдельно описывает реализацию и ограничения проверок.
 
 ## Разработка
 
