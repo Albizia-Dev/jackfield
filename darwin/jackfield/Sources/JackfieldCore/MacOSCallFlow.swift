@@ -37,8 +37,8 @@ public struct MacOSCallFlow: Sendable {
     if record.state == "ended" { return (record, nil) }
     if record.state == "connecting", let actionId = record.actionId,
        !record.actionReceipts.contains(where: { $0.actionId == actionId }) {
-      let resolution = try await store.resolveAnswer(actionId, succeeded: false, eventId: UUID().uuidString, at: date)
-      return (try await store.snapshot(callId: callId) ?? record, resolution.ended)
+      let result = try await store.endPendingAnswer(callId: callId, eventId: UUID().uuidString, reason: reason, at: date)
+      return (result.record, result.event)
     }
     let event = try await store.saveEnded(callId: callId, eventId: UUID().uuidString, reason: reason, at: date, admissionCritical: true)
     return (try await store.snapshot(callId: callId) ?? record, event)

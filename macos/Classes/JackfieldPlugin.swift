@@ -13,12 +13,16 @@ public final class JackfieldPlugin: NSObject, @preconcurrency FlutterPlugin {
   private let store: EventStore?
   private var controller: MacOSCallController?
   private var eventsSink: FlutterEventSink?
+  private var replayBuffer = MacOSEventReplayBuffer()
   private var lastError: String?
 
   private override init() {
     store = MacOSCallbackRuntime.shared.store
     super.init()
-    if let store { controller = MacOSCallController(store: store) { [weak self] event in self?.publish(event) } }
+    if let store {
+      controller = MacOSCallController(store: store, publish: { [weak self] event in self?.publish(event) },
+                                       reportFailure: { [weak self] code in self?.lastError = code })
+    }
     else { lastError = "platformFailure" }
   }
 
@@ -28,9 +32,8 @@ public final class JackfieldPlugin: NSObject, @preconcurrency FlutterPlugin {
     registrar.addMethodCallDelegate(instance, channel: channel)
     FlutterEventChannel(name: "jackfield/events", binaryMessenger: registrar.messenger).setStreamHandler(
       MacOSStreamHandler(onListen: { [weak instance] sink in
-        instance?.eventsSink = sink
-        instance?.replay()
-      }, onCancel: { [weak instance] in instance?.eventsSink = nil }))
+        instance?.startReplay(sink)
+      }, onCancel: { [weak instance] in instance?.stopReplay() }))
     FlutterEventChannel(name: "jackfield/push_token_updates", binaryMessenger: registrar.messenger).setStreamHandler(
       MacOSStreamHandler(onListen: { _ in }, onCancel: {}))
   }
@@ -129,19 +132,41 @@ public final class JackfieldPlugin: NSObject, @preconcurrency FlutterPlugin {
   }
 
   private func publish(_ event: WireEnvelope) {
-    eventsSink?(event.toWire())
+    if let eventsSink {
+      for ready in replayBuffer.publish(event) { eventsSink(ready.toWire()) }
+    }
     Task { await runtime.sendReady() }
   }
 
-  private func replay() {
+  private func startReplay(_ sink: @escaping FlutterEventSink) {
+    eventsSink = sink
+    let generation = replayBuffer.begin()
     guard let store else {
-      eventsSink?(FlutterError(code: "platformFailure", message: "Native storage unavailable", details: nil))
+      sink(FlutterError(code: "platformFailure", message: "Native storage unavailable", details: nil))
       return
     }
     Task { @MainActor [weak self] in
-      guard let self, let pending = try? await store.pendingFlutter() else { return }
-      for event in pending { self.eventsSink?(event.toWire()) }
+      let pending = try? await store.pendingFlutter()
+      guard let self, self.replayBuffer.isCurrent(generation) else { return }
+      if pending == nil {
+        self.lastError = "platformFailure"
+        self.eventsSink?(FlutterError(code: "platformFailure", message: nil, details: nil))
+      }
+      var batch = self.replayBuffer.finish(generation: generation, pending: pending ?? [])
+      while self.replayBuffer.isCurrent(generation) {
+        for event in batch {
+          guard self.replayBuffer.isCurrent(generation) else { return }
+          self.eventsSink?(event.toWire())
+        }
+        batch = self.replayBuffer.drain(generation: generation)
+        if batch.isEmpty { return }
+      }
     }
+  }
+
+  private func stopReplay() {
+    replayBuffer.cancel()
+    eventsSink = nil
   }
 
   private static func authorization(_ status: UNAuthorizationStatus) -> MacOSNotificationAuthorization {

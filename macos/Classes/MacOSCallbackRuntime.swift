@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import Security
 
@@ -29,8 +28,8 @@ final class MacOSCallbackRuntime {
 
   func configure(endpoint: URL, token: String, ttl: TimeInterval, limit: Int) async throws {
     guard let store else { throw JackfieldCoreError.platformFailure }
-    try MacOSCredentialStore.save(token)
-    let fingerprint = Self.fingerprint(endpoint: endpoint, token: token)
+    let fingerprint = MacOSCredentialBinding.fingerprint(endpoint: endpoint, token: token)
+    try MacOSCredentialStore.save(token, fingerprint: fingerprint)
     try await store.configureHTTP(limit: limit, credentialFingerprint: fingerprint,
                                   endpoint: endpoint.absoluteString, ttl: ttl)
     try await store.resumeHTTPAfterCredentialRotation()
@@ -40,7 +39,7 @@ final class MacOSCallbackRuntime {
   func disable() async throws {
     guard let store else { throw JackfieldCoreError.platformFailure }
     try await store.disableHTTP()
-    MacOSCredentialStore.delete()
+    MacOSCredentialStore.deleteAll()
     wake?.cancel()
   }
 
@@ -48,17 +47,18 @@ final class MacOSCallbackRuntime {
     guard let store else { return }
     wake?.cancel()
     try? await store.expireHTTP(at: Date())
-    if let config = try? await store.httpConfiguration(),
-       let endpoint = URL(string: config.endpoint),
-       let token = MacOSCredentialStore.read(),
+    var credentialAvailable = false
+    if let committed = try? await store.httpDeliveryConfiguration(),
+       let endpoint = URL(string: committed.configuration.endpoint),
+       let token = MacOSCredentialStore.selectedToken(endpoint: endpoint, fingerprint: committed.fingerprint),
        let events = try? await CallbackQueue(store: store).ready(at: Date()) {
-      let fingerprint = Self.fingerprint(endpoint: endpoint, token: token)
+      credentialAvailable = true
       for event in events where active.insert(event.eventId).inserted {
-        Task { await deliver(event, to: endpoint, token: token, fingerprint: fingerprint) }
+        Task { await deliver(event, to: endpoint, token: token, fingerprint: committed.fingerprint) }
       }
     }
     guard let next = try? await store.nextHTTPWake() else { return }
-    let delay = max(1, next.timeIntervalSinceNow)
+    let delay = max(credentialAvailable ? 1 : 60, next.timeIntervalSinceNow)
     wake = Task { [weak self] in
       try? await Task.sleep(nanoseconds: UInt64(min(delay, 3600) * 1_000_000_000))
       guard !Task.isCancelled else { return }
@@ -91,10 +91,6 @@ final class MacOSCallbackRuntime {
       credentialFingerprint: fingerprint, at: Date(), retryAfter: retryAfter)
   }
 
-  private static func fingerprint(endpoint: URL, token: String) -> String {
-    SHA256.hash(data: Data((endpoint.absoluteString + "\u{0}" + token).utf8))
-      .map { String(format: "%02x", $0) }.joined()
-  }
 }
 
 private final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate {
@@ -106,21 +102,21 @@ private final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate {
 }
 
 private enum MacOSCredentialStore {
-  private static let account = "jackfield.callback.bearer"
+  private static let legacyAccount = "jackfield.callback.bearer"
   private static let service = "dev.albizia.jackfield.macos"
 
-  static func save(_ token: String) throws {
-    let query = [kSecClass: kSecClassGenericPassword, kSecAttrService: service, kSecAttrAccount: account] as CFDictionary
+  static func save(_ token: String, fingerprint: String) throws {
+    let query = [kSecClass: kSecClassGenericPassword, kSecAttrService: service, kSecAttrAccount: fingerprint] as CFDictionary
     let update = [kSecValueData: Data(token.utf8)] as CFDictionary
     let status = SecItemUpdate(query, update)
     if status == errSecSuccess { return }
     guard status == errSecItemNotFound else { throw JackfieldCoreError.platformFailure }
     let add = SecItemAdd([kSecClass: kSecClassGenericPassword, kSecAttrService: service,
-                          kSecAttrAccount: account, kSecValueData: Data(token.utf8)] as CFDictionary, nil)
+                          kSecAttrAccount: fingerprint, kSecValueData: Data(token.utf8)] as CFDictionary, nil)
     guard add == errSecSuccess else { throw JackfieldCoreError.platformFailure }
   }
 
-  static func read() -> String? {
+  private static func read(account: String) -> String? {
     var value: CFTypeRef?
     let status = SecItemCopyMatching([kSecClass: kSecClassGenericPassword, kSecAttrService: service,
       kSecAttrAccount: account, kSecReturnData: true, kSecMatchLimit: kSecMatchLimitOne] as CFDictionary, &value)
@@ -128,7 +124,20 @@ private enum MacOSCredentialStore {
     return String(data: data, encoding: .utf8)
   }
 
-  static func delete() {
-    SecItemDelete([kSecClass: kSecClassGenericPassword, kSecAttrService: service, kSecAttrAccount: account] as CFDictionary)
+  static func selectedToken(endpoint: URL, fingerprint: String) -> String? {
+    if let token = MacOSCredentialBinding.select(endpoint: endpoint, committedFingerprint: fingerprint,
+                                                 tokenForFingerprint: { read(account: $0) }) { return token }
+    guard let legacy = read(account: legacyAccount),
+          MacOSCredentialBinding.fingerprint(endpoint: endpoint, token: legacy) == fingerprint else { return nil }
+    do {
+      try save(legacy, fingerprint: fingerprint)
+      SecItemDelete([kSecClass: kSecClassGenericPassword, kSecAttrService: service,
+                     kSecAttrAccount: legacyAccount] as CFDictionary)
+    } catch { }
+    return legacy
+  }
+
+  static func deleteAll() {
+    SecItemDelete([kSecClass: kSecClassGenericPassword, kSecAttrService: service] as CFDictionary)
   }
 }

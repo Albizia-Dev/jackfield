@@ -21,13 +21,15 @@ final class MacOSCallController: NSObject, UNUserNotificationCenterDelegate {
   private let store: EventStore
   private let flow: MacOSCallFlow
   private let publish: (WireEnvelope) -> Void
+  private let reportFailure: (String) -> Void
   private var previousDelegate: UNUserNotificationCenterDelegate?
   private var deadlines: [String: Task<Void, Never>] = [:]
 
-  init(store: EventStore, publish: @escaping (WireEnvelope) -> Void) {
+  init(store: EventStore, publish: @escaping (WireEnvelope) -> Void, reportFailure: @escaping (String) -> Void) {
     self.store = store
     self.flow = MacOSCallFlow(store: store)
     self.publish = publish
+    self.reportFailure = reportFailure
     super.init()
     previousDelegate = center.delegate
     center.delegate = self
@@ -107,7 +109,10 @@ final class MacOSCallController: NSObject, UNUserNotificationCenterDelegate {
     deadlines.removeValue(forKey: actionId)?.cancel()
     if let event = outcome.ended { publish(event) }
     if let record = try await store.allCallRecords().first(where: { $0.actionId == actionId }) {
-      if outcome.receipt.succeeded { try? await present(record) }
+      if outcome.receipt.succeeded {
+        do { try await present(record) }
+        catch { reportFailure("platformFailure") }
+      }
       else { removeNotification(record.callId) }
     }
     return outcome.receipt
@@ -155,7 +160,9 @@ final class MacOSCallController: NSObject, UNUserNotificationCenterDelegate {
       let seconds = max(0, deadline.timeIntervalSinceNow + 0.001)
       try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
       guard !Task.isCancelled else { return }
-      _ = try? await self?.complete(actionId: actionId, succeeded: false)
+      guard let self else { return }
+      do { _ = try await self.complete(actionId: actionId, succeeded: false) }
+      catch { self.reportFailure("platformFailure") }
     }
   }
 
@@ -172,24 +179,42 @@ final class MacOSCallController: NSObject, UNUserNotificationCenterDelegate {
     let action = response.actionIdentifier
     guard [Category.answer, Category.reject, Category.end].contains(action),
           let callId = response.notification.request.content.userInfo["callId"] as? String else {
-      if let previousDelegate {
-        previousDelegate.userNotificationCenter?(center, didReceive: response, withCompletionHandler: completionHandler)
-      } else { completionHandler() }
+      MacOSDelegateForwarding.forward(optionalCall: {
+        previousDelegate?.userNotificationCenter?(center, didReceive: response, withCompletionHandler: completionHandler)
+      }, fallback: completionHandler)
       return
     }
     defer { completionHandler() }
-    do {
-      if action == Category.answer {
-        let actionId = UUID().uuidString
-        let deadline = Date().addingTimeInterval(30)
-        let event = try await flow.answer(callId: callId, actionId: actionId, eventId: UUID().uuidString, deadline: deadline)
+    if action == Category.answer {
+      let actionId = UUID().uuidString
+      let deadline = Date().addingTimeInterval(30)
+      let outcome = await MacOSActionHandling.capture({
+        try await flow.answer(callId: callId, actionId: actionId, eventId: UUID().uuidString, deadline: deadline)
+      }, onFailure: reportFailure)
+      switch outcome {
+      case .success(let event):
         scheduleDeadline(actionId, at: deadline)
         publish(event)
-        if let record = try await store.snapshot(callId: callId) { try? await present(record) }
-      } else {
-        _ = try await end(callId: callId, reason: action == Category.reject ? "rejected" : "local")
+        await restoreNotification(callId)
+      case .failure:
+        await restoreNotification(callId, preserveActionError: true)
       }
-    } catch { }
+    } else {
+      let outcome = await MacOSActionHandling.capture({
+        try await end(callId: callId, reason: action == Category.reject ? "rejected" : "local")
+      }, onFailure: reportFailure)
+      if case .failure = outcome {
+        await restoreNotification(callId, preserveActionError: true)
+      }
+    }
+  }
+
+  private func restoreNotification(_ callId: String, preserveActionError: Bool = false) async {
+    do {
+      if let record = try await store.snapshot(callId: callId), record.state != "ended" { try await present(record) }
+    } catch {
+      if !preserveActionError { reportFailure("platformFailure") }
+    }
   }
 
   nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
@@ -204,9 +229,11 @@ final class MacOSCallController: NSObject, UNUserNotificationCenterDelegate {
                                  completionHandler: @escaping @Sendable (UNNotificationPresentationOptions) -> Void) {
     if notification.request.identifier.hasPrefix("dev.albizia.jackfield.") {
       completionHandler([.banner, .sound])
-    } else if let previousDelegate {
-      previousDelegate.userNotificationCenter?(center, willPresent: notification, withCompletionHandler: completionHandler)
-    } else { completionHandler([]) }
+    } else {
+      MacOSDelegateForwarding.forward(optionalCall: {
+        previousDelegate?.userNotificationCenter?(center, willPresent: notification, withCompletionHandler: completionHandler)
+      }, fallback: { completionHandler([]) })
+    }
   }
 }
 

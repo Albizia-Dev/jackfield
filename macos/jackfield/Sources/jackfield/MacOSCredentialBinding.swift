@@ -1,0 +1,1 @@
+../../../../darwin/jackfield/Sources/JackfieldCore/MacOSCredentialBinding.swift

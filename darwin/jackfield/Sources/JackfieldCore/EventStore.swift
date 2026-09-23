@@ -151,6 +151,17 @@ public actor EventStore {
       return event
     }
   }
+  public func endPendingAnswer(callId: String, eventId: String, reason: String, at date: Date) throws -> (record: CallRecord, event: WireEnvelope) {
+    try transaction {
+      guard var record = try snapshot(callId: callId), record.state == "connecting", let actionId = record.actionId,
+            !record.actionReceipts.contains(where: { $0.actionId == actionId }) else { throw JackfieldCoreError.invalidState }
+      let event = try WireEnvelope.ended(callId: callId, eventId: eventId, sequence: try nextSequence(callId), occurredAt: date, reason: reason)
+      record.actionReceipts.append(ActionReceipt(actionId: actionId, succeeded: false))
+      record.state = "ended"
+      try put(record); try insert(event, admissionCritical: true)
+      return (record, event)
+    }
+  }
   public func save(snapshot: CallRecord, event: WireEnvelope) throws {
     guard snapshot.callId == event.callId else { throw JackfieldCoreError.protocolFailure }
     try transaction { try put(snapshot); try insert(event) }
@@ -270,6 +281,10 @@ public actor EventStore {
           let ttlText = try setting("http_ttl"), let ttl = TimeInterval(ttlText),
           let limitText = try setting("http_limit"), let limit = Int(limitText) else { return nil }
     return HTTPConfiguration(endpoint: endpoint, ttl: ttl, limit: limit)
+  }
+  public func httpDeliveryConfiguration() throws -> (configuration: HTTPConfiguration, fingerprint: String)? {
+    guard let configuration = try httpConfiguration(), let fingerprint = try setting("credential_fingerprint") else { return nil }
+    return (configuration, fingerprint)
   }
   public func httpPausedForAuthentication() throws -> Bool {
     try setting("auth_pause") == "1"
