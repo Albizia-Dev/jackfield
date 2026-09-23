@@ -396,9 +396,11 @@
     settings = { leaseMs: options.leaseMs || 45000, heartbeatMs: options.heartbeatMs || 15000 };
     scope.addEventListener('push', event => event.waitUntil(push(event)));
     scope.addEventListener('notificationclick', event => event.waitUntil(click(event)));
-    scope.addEventListener('sync', event => {
+    const onOutboxSync = event => {
       if (event.tag === 'jackfield-outbox') event.waitUntil(safeDrain());
-    });
+    };
+    scope.addEventListener('sync', onOutboxSync);
+    scope.addEventListener('periodicsync', onOutboxSync);
     scope.addEventListener('message', event => {
       if (!event.data || event.data.jackfield !== 1 || !event.ports?.[0]) return;
       event.waitUntil(command(event.data, event.source?.id).then(result => event.ports[0].postMessage({ version: 1, ...result }))

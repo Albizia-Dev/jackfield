@@ -34,3 +34,9 @@ Verification after fix round 1: `tool/test_web.sh` passed (19 worker tests, 65 F
 - Example Flutter bootstrap runs after registration settles even if it failed or Service Workers are unsupported. Capability reporting checks the intended active worker.
 
 Verification: `tool/test_web.sh` passed (26 worker tests, 65 Flutter tests, JavaScript and Wasm release builds, and generated HTML smoke); `flutter analyze`, Dart format and `git diff --check` passed. Browser/provider delivery and exact background wake timing remain unverified.
+
+## Fix round 3
+
+Registered `periodicsync` for the Jackfield outbox tag using the same `safeDrain()` and `waitUntil` path as one-shot Sync. Other tags are ignored. The regression test first failed because no periodic handler existed, then passed with a due callback delivered and terminal HTTP receipt persisted.
+
+Verification: `tool/test_web.sh` passed (27 worker tests, 65 Flutter tests, JavaScript and Wasm release builds and smoke); `flutter analyze` and `git diff --check` passed. Browser scheduling remains unverified.

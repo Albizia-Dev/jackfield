@@ -65,6 +65,25 @@ async function records(name, store) {
   return values;
 }
 
+async function updateRecord(name, storeName, id, update) {
+  const db = await new Promise((resolve, reject) => {
+    const req = fakeIndexedDB.open(name);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(storeName, 'readwrite');
+      const store = tx.objectStore(storeName);
+      const req = store.get(id);
+      req.onsuccess = () => store.put(update(req.result));
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+  } finally { db.close(); }
+}
+
 test('push persists before notification and uses stable event identity', async () => {
   const { scope, listeners, notifications } = harness();
   scope.JackfieldWorker.install();
@@ -338,6 +357,33 @@ test('early Background Sync re-registers future work and records earliest due', 
   assert.ok(syncs.length > before);
   assert.ok(periodic.some(item => item.tag === 'jackfield-outbox'));
   assert.ok((await records(h.scope.JackfieldDatabaseName, 'meta')).find(item => item.id === 'nextHttpAt').value > Date.now());
+});
+
+test('Periodic Background Sync drains due callbacks and ignores unrelated tags', async () => {
+  const h = harness();
+  h.scope.JackfieldWorker.install();
+  let calls = 0;
+  h.scope.fetch = async () => {
+    calls += 1;
+    return { status: calls === 1 ? 503 : 204, headers: { get: () => null } };
+  };
+  await h.scope.JackfieldWorker.configure({ endpoint: 'https://callbacks.example.test/events', auth: { type: 'bearer', token: 'token' }, timeToLiveMs: 60000, maxPendingEvents: 10 });
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
+  const item = (await records(h.scope.JackfieldDatabaseName, 'outbox'))[0];
+  await updateRecord(h.scope.JackfieldDatabaseName, 'outbox', item.id, current => ({ ...current, nextAt: 0 }));
+  const listener = h.listeners.get('periodicsync');
+  assert.ok(listener, 'worker must register a periodicsync handler');
+  let unrelated = false;
+  listener({ tag: 'unrelated', waitUntil: () => { unrelated = true; } });
+  assert.equal(unrelated, false);
+  assert.equal(calls, 1);
+  let work;
+  listener({ tag: 'jackfield-outbox', waitUntil: promise => { work = promise; } });
+  assert.ok(work, 'worker must extend the periodic event lifetime');
+  await work;
+  assert.equal(calls, 2);
+  assert.equal((await records(h.scope.JackfieldDatabaseName, 'outbox'))[0].state, 'delivered');
 });
 
 test('live event goes only to current lease client after takeover', async () => {
