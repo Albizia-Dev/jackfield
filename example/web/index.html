@@ -52,7 +52,7 @@
         throw new Error('Jackfield host worker is not active for this page');
       }
       return ready;
-    })();
+    })().catch(() => null);
     window.JackfieldHostWorkerRegistration.then(() => {
       const bootstrap = document.createElement('script');
       bootstrap.src = 'flutter_bootstrap.js';

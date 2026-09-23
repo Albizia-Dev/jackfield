@@ -75,6 +75,12 @@ final class JackfieldWebPlatform extends JackfieldPlatform {
           reason: 'Notifications API unavailable',
         );
       }
+      if (!await WebBridge.available()) {
+        return JackfieldCapabilities.unavailable(
+          platform: 'web',
+          reason: 'Host worker unavailable',
+        );
+      }
       return JackfieldCapabilities(
         platform: 'web',
         mechanism: JackfieldMechanism.webNotification,

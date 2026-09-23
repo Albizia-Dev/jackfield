@@ -7,6 +7,9 @@ external JSPromise<JSString> _invoke(JSString message);
 @JS('JackfieldBridge.claim')
 external JSPromise<JSBoolean> _claim();
 
+@JS('JackfieldBridge.available')
+external JSPromise<JSBoolean> _available();
+
 @JS('JackfieldBridge.listen')
 external void _listen(JSFunction listener);
 
@@ -31,6 +34,9 @@ abstract final class WebBridge {
 
   /// Claims or renews the single-tab delivery lease.
   static Future<bool> claim() async => (await _claim().toDart).toDart;
+
+  /// Whether the intended host worker registration is active.
+  static Future<bool> available() async => (await _available().toDart).toDart;
 
   /// Receives worker events in the current owning tab.
   static void listen(void Function(Map<String, Object?>) callback) {

@@ -24,3 +24,13 @@ These checks do not demonstrate push delivery or worker scheduling on a deployed
 - Added `node_modules/` to `.gitignore`; no user data was removed.
 
 Verification after fix round 1: `tool/test_web.sh` passed (19 worker tests, 65 Flutter tests, JavaScript and Wasm release builds, artifact smoke); `flutter analyze` found no issues; Dart format and `git diff --check` were clean. Browser/provider delivery and Background Sync timing remain unverified without a deployed browser.
+
+## Fix round 2
+
+- Browser opaque redirects are classified terminal with `redirect: "manual"`; network exceptions stay retryable.
+- The earliest HTTP due time is durable. Early one-shot Sync re-registers pending work; initialization re-arms persisted work after restart. Periodic Background Sync and the live-tab timer are additional best-effort opportunities.
+- Live events target the lease's current client ID and token. A takeover during client lookup is fenced by an IndexedDB owner read immediately before `postMessage`.
+- Flutter state and HTTP admission now commit in one IndexedDB transaction. Queue overflow commits Flutter state plus a diagnostic; a publish failure cannot strand the callback before admission.
+- Example Flutter bootstrap runs after registration settles even if it failed or Service Workers are unsupported. Capability reporting checks the intended active worker.
+
+Verification: `tool/test_web.sh` passed (26 worker tests, 65 Flutter tests, JavaScript and Wasm release builds, and generated HTML smoke); `flutter analyze`, Dart format and `git diff --check` passed. Browser/provider delivery and exact background wake timing remain unverified.

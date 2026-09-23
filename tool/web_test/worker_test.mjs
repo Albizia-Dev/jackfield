@@ -152,7 +152,7 @@ test('callback uses envelope, terminal redirect and occurredAt TTL', async () =>
   await h.scope.JackfieldWorker.configure({ endpoint: 'https://callbacks.example.test/events', auth: { type: 'bearer', token: 'token' }, timeToLiveMs: 60000, maxPendingEvents: 10 });
   await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'video' } });
   await dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
-  assert.equal(requests[0].redirect, 'error');
+  assert.equal(requests[0].redirect, 'manual');
   assert.equal(JSON.parse(requests[0].body).event.type, 'answer_requested');
   assert.equal(JSON.parse(requests[0].body).version, 1);
   assert.equal((await records(h.scope.JackfieldDatabaseName, 'outbox'))[0].state, 'terminal');
@@ -291,6 +291,116 @@ test('bridge refuses an unrelated worker registration', async () => {
   const navigator = { serviceWorker: { addEventListener() {}, getRegistration: async () => ({ active: { postMessage() {} } }) } };
   vm.runInNewContext(bridgeSource, { window, navigator, URL, atob, MessageChannel: class {}, setTimeout, clearTimeout });
   await assert.rejects(window.JackfieldBridge.invoke(JSON.stringify({ command: 'initialize' })), /host worker registration unavailable/);
+});
+
+test('bridge reports unavailable when host registration failed', async () => {
+  const bridgeSource = await readFile(new URL('../../web/jackfield_bridge.js', import.meta.url), 'utf8');
+  const window = { crypto: { randomUUID: () => 'owner' }, JackfieldHostWorkerRegistration: Promise.resolve(null), Notification: { permission: 'granted' } };
+  const navigator = { serviceWorker: { addEventListener() {} } };
+  vm.runInNewContext(bridgeSource, { window, navigator, URL, atob, MessageChannel: class {}, setTimeout, clearTimeout });
+  assert.equal(await window.JackfieldBridge.available(), false);
+});
+
+test('browser opaque redirect is terminal while a network rejection remains retryable', async () => {
+  for (const [response, state] of [
+    [{ type: 'opaqueredirect', status: 0, headers: { get: () => null } }, 'terminal'],
+    [null, 'pending'],
+  ]) {
+    const h = harness();
+    h.scope.JackfieldWorker.install();
+    let mode;
+    h.scope.fetch = async (_, options) => {
+      mode = options.redirect;
+      if (!response) throw new TypeError('Failed to fetch');
+      return response;
+    };
+    await h.scope.JackfieldWorker.configure({ endpoint: 'https://callbacks.example.test/events', auth: { type: 'bearer', token: 'token' }, timeToLiveMs: 60000, maxPendingEvents: 10 });
+    await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+    await dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
+    assert.equal(mode, 'manual');
+    assert.equal((await records(h.scope.JackfieldDatabaseName, 'outbox'))[0].state, state);
+  }
+});
+
+test('early Background Sync re-registers future work and records earliest due', async () => {
+  const h = harness();
+  h.scope.JackfieldWorker.install();
+  const syncs = [];
+  const periodic = [];
+  h.scope.registration.sync = { register: async tag => syncs.push(tag) };
+  h.scope.registration.periodicSync = { register: async (tag, options) => periodic.push({ tag, options }) };
+  h.scope.fetch = async () => ({ status: 503, headers: { get: name => name === 'Retry-After' ? '60' : null } });
+  await h.scope.JackfieldWorker.configure({ endpoint: 'https://callbacks.example.test/events', auth: { type: 'bearer', token: 'token' }, timeToLiveMs: 600000, maxPendingEvents: 10 });
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
+  const before = syncs.length;
+  await dispatch(h.listeners, 'sync', { tag: 'jackfield-outbox' });
+  assert.ok(syncs.length > before);
+  assert.ok(periodic.some(item => item.tag === 'jackfield-outbox'));
+  assert.ok((await records(h.scope.JackfieldDatabaseName, 'meta')).find(item => item.id === 'nextHttpAt').value > Date.now());
+});
+
+test('live event goes only to current lease client after takeover', async () => {
+  const h = harness();
+  h.scope.JackfieldWorker.install({ leaseMs: 10 });
+  const first = [];
+  const second = [];
+  h.clients.push({ id: 'client-a', postMessage: message => first.push(message) }, { id: 'client-b', postMessage: message => second.push(message) });
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'claim', owner: 'a' }, 'client-a');
+  await new Promise(resolve => setTimeout(resolve, 15));
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'claim', owner: 'b' }, 'client-b');
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
+  assert.equal(first.length, 0);
+  assert.equal(second.length, 1);
+});
+
+test('takeover during client lookup fences the former owner', async () => {
+  const h = harness();
+  h.scope.JackfieldWorker.install({ leaseMs: 10 });
+  const first = [];
+  const second = [];
+  h.clients.push({ id: 'client-a', postMessage: message => first.push(message) }, { id: 'client-b', postMessage: message => second.push(message) });
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'claim', owner: 'a' }, 'client-a');
+  let release;
+  h.scope.clients.matchAll = () => new Promise(resolve => { release = () => resolve(h.clients); });
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  const click = dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
+  while (!release) await new Promise(resolve => setTimeout(resolve, 1));
+  await new Promise(resolve => setTimeout(resolve, 15));
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'claim', owner: 'b' }, 'client-b');
+  release();
+  await click;
+  assert.equal(first.length, 0);
+  assert.equal(second.length, 1);
+});
+
+test('publish failure after durable commit leaves callback outbox recoverable', async () => {
+  const h = harness();
+  h.scope.JackfieldWorker.install();
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'claim', owner: 'tab' }, 'client-a');
+  h.scope.clients.matchAll = async () => { throw new Error('worker terminated while publishing'); };
+  await h.scope.JackfieldWorker.configure({ endpoint: 'https://callbacks.example.test/events', auth: { type: 'bearer', token: 'token' }, timeToLiveMs: 60000, maxPendingEvents: 10 });
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await assert.rejects(dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } }));
+  assert.equal((await records(h.scope.JackfieldDatabaseName, 'inbox')).filter(item => item.event).length, 1);
+  assert.equal((await records(h.scope.JackfieldDatabaseName, 'receipts')).filter(item => item.deadline).length, 1);
+  assert.equal((await records(h.scope.JackfieldDatabaseName, 'outbox')).length, 1);
+});
+
+test('initialization re-arms persisted callback work after worker restart', async () => {
+  const h = harness();
+  h.scope.JackfieldWorker.install();
+  const registered = [];
+  h.scope.registration.sync = { register: async tag => registered.push(tag) };
+  h.scope.fetch = async () => { throw new TypeError('offline'); };
+  const callbacks = { endpoint: 'https://callbacks.example.test/events', auth: { type: 'bearer', token: 'token' }, timeToLiveMs: 60000, maxPendingEvents: 10 };
+  await h.scope.JackfieldWorker.configure(callbacks);
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
+  registered.length = 0;
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'initialize', callbacks });
+  assert.ok(registered.includes('jackfield-outbox'));
 });
 
 test('notification permission requests are available only through an explicit gesture entrypoint', async () => {

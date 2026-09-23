@@ -47,33 +47,34 @@
     }
   }
 
-  async function pending(owner, token) {
+  async function pending(owner, token, clientId) {
     return transaction(['meta', 'inbox'], 'readonly', async tx => {
       const lease = await request(tx.objectStore('meta').get('owner'));
-      if (!lease || lease.owner !== owner || lease.token !== token || lease.expiresAt <= Date.now()) return null;
+      if (!lease || lease.owner !== owner || lease.token !== token || lease.expiresAt <= Date.now() || clientId && lease.clientId !== clientId) return null;
       return (await request(tx.objectStore('inbox').getAll())).filter(item => !item.acknowledged && item.event).map(item => item.event);
     });
   }
 
-  async function claim(owner) {
+  async function claim(owner, clientId = owner) {
     if (!owner) return false;
     return transaction(['meta', 'inbox'], 'readwrite', async tx => {
       const store = tx.objectStore('meta');
       const current = await request(store.get('owner'));
       const now = Date.now();
       if (current && current.owner !== owner && current.expiresAt > now) return false;
-      const token = current && current.owner === owner && current.expiresAt > now ? current.token : scope.crypto.randomUUID();
-      store.put({ id: 'owner', owner, token, expiresAt: now + settings.leaseMs });
-      const replay = current && current.owner === owner && current.expiresAt > now ? [] :
+      const renewing = current && current.owner === owner && current.clientId === clientId && current.expiresAt > now;
+      const token = renewing ? current.token : scope.crypto.randomUUID();
+      store.put({ id: 'owner', owner, clientId, token, expiresAt: now + settings.leaseMs });
+      const replay = renewing ? [] :
         (await request(tx.objectStore('inbox').getAll())).filter(item => !item.acknowledged && item.event).map(item => item.event);
       return { token, pending: replay };
     });
   }
 
-  async function acknowledge(owner, token, eventIds) {
+  async function acknowledge(owner, token, eventIds, clientId) {
     return transaction(['meta', 'inbox'], 'readwrite', async tx => {
       const lease = await request(tx.objectStore('meta').get('owner'));
-      if (!lease || lease.owner !== owner || lease.token !== token || lease.expiresAt <= Date.now()) return false;
+      if (!lease || lease.owner !== owner || lease.token !== token || lease.expiresAt <= Date.now() || clientId && lease.clientId !== clientId) return false;
       const store = tx.objectStore('inbox');
       for (const id of eventIds) {
         const item = await request(store.get(id));
@@ -98,11 +99,16 @@
 
   async function publish(event) {
     const clients = await scope.clients.matchAll({ type: 'window', includeUncontrolled: true });
-    for (const client of clients) client.postMessage({ jackfield: 1, type: 'event', event });
+    await transaction(['meta'], 'readonly', async tx => {
+      const lease = await request(tx.objectStore('meta').get('owner'));
+      if (!lease || lease.expiresAt <= Date.now()) return;
+      const client = clients.find(candidate => candidate.id === lease.clientId);
+      if (client) client.postMessage({ jackfield: 1, type: 'event', token: lease.token, event });
+    });
   }
 
   async function persistEvent(event, snapshot, receipt) {
-    const persisted = await transaction(['snapshots', 'inbox', 'receipts', 'meta'], 'readwrite', async tx => {
+    const persisted = await transaction(['snapshots', 'inbox', 'receipts', 'meta', 'outbox'], 'readwrite', async tx => {
       const inbox = tx.objectStore('inbox');
       if (await request(inbox.get(event.eventId))) return false;
       if (snapshot) {
@@ -116,25 +122,21 @@
       inbox.put({ id: event.eventId, event, acknowledged: false });
       if (snapshot) tx.objectStore('snapshots').put({ id: snapshot.callId, ...snapshot });
       if (receipt) tx.objectStore('receipts').put(receipt);
-      return true;
+      const meta = tx.objectStore('meta');
+      const config = await request(meta.get('callbackConfig'));
+      if (!config) return { admitted: false };
+      const existing = await request(tx.objectStore('outbox').getAll());
+      if (existing.filter(item => item.state === 'pending' || item.state === 'sending').length >= config.maxPendingEvents) {
+        meta.put({ id: 'httpDiagnostic', code: 'queueFull', eventId: event.eventId });
+        return { admitted: false };
+      }
+      tx.objectStore('outbox').put({ id: event.eventId, event, state: 'pending', attempt: 0, nextAt: 0,
+        expiresAt: Date.parse(event.occurredAt) + config.timeToLiveMs });
+      return { admitted: true };
     });
     if (!persisted) return;
-    await publish(event);
-    try {
-      await transaction(['meta', 'outbox'], 'readwrite', async tx => {
-        const meta = tx.objectStore('meta');
-        const config = await request(meta.get('callbackConfig'));
-        if (!config) return;
-        const existing = await request(tx.objectStore('outbox').getAll());
-        if (existing.filter(item => item.state === 'pending' || item.state === 'sending').length >= config.maxPendingEvents) {
-          meta.put({ id: 'httpDiagnostic', code: 'queueFull', eventId: event.eventId });
-          return;
-        }
-        tx.objectStore('outbox').put({ id: event.eventId, event, state: 'pending', attempt: 0, nextAt: 0,
-          expiresAt: Date.parse(event.occurredAt) + config.timeToLiveMs });
-      });
-      await scheduleOutbox();
-    } catch (_) { await diagnostic('storageFailure', event.eventId); }
+    try { await publish(event); }
+    finally { if (persisted.admitted) await scheduleOutbox(); }
   }
 
   async function diagnostic(code, eventId) {
@@ -142,8 +144,25 @@
   }
 
   async function scheduleOutbox() {
-    try { await scope.registration.sync?.register('jackfield-outbox'); }
-    catch (_) { await diagnostic('schedulerFailure', ''); }
+    try {
+      const dueAt = await transaction(['meta', 'outbox'], 'readwrite', async tx => {
+        const meta = tx.objectStore('meta');
+        if (!await request(meta.get('callbackConfig')) || await request(meta.get('authPaused'))) return null;
+        const queued = (await request(tx.objectStore('outbox').getAll())).filter(item => ['pending', 'sending'].includes(item.state));
+        if (!queued.length) {
+          meta.delete('nextHttpAt');
+          return null;
+        }
+        const earliest = Math.min(...queued.map(item => Math.min(item.state === 'sending' ? item.claimUntil : item.nextAt, item.expiresAt)));
+        meta.put({ id: 'nextHttpAt', value: earliest });
+        return earliest;
+      });
+      if (dueAt === null) return;
+      try { await scope.registration.sync?.register('jackfield-outbox'); }
+      catch (_) { await diagnostic('schedulerFailure', ''); }
+      try { await scope.registration.periodicSync?.register('jackfield-outbox', { minInterval: 900000 }); }
+      catch (_) { /* one-shot Sync and a live tab may still drain */ }
+    } catch (_) { await diagnostic('schedulerFailure', ''); }
   }
 
   async function push(event) {
@@ -218,6 +237,7 @@
       else store.delete('callbackConfig');
       if (!old || !callbacks || old.auth.token !== callbacks.auth.token) store.delete('authPaused');
     });
+    await scheduleOutbox();
   }
 
   async function drainOutbox() {
@@ -225,7 +245,7 @@
       const job = await transaction(['meta', 'outbox'], 'readwrite', async tx => {
         const meta = tx.objectStore('meta');
         const config = await request(meta.get('callbackConfig'));
-        if (!config || await request(meta.get('authPaused'))) return null;
+        if (!config || await request(meta.get('authPaused'))) return { skip: true };
         const queue = (await request(tx.objectStore('outbox').getAll()))
           .filter(item => item.state === 'pending' || item.state === 'sending')
           .sort((a, b) => a.event.callId.localeCompare(b.event.callId) || a.event.sequence - b.event.sequence);
@@ -246,20 +266,21 @@
           tx.objectStore('outbox').put(claimed);
           return { item: claimed, config };
         }
-        return null;
+        return { waiting: true };
       });
-      if (!job) return;
+      if (job.skip) return;
+      if (job.waiting) { await scheduleOutbox(); return; }
       const { item, config } = job;
       let status = 0;
       let retryAfter = 0;
       try {
         const response = await scope.fetch(config.endpoint, {
-          method: 'POST', redirect: 'error',
+          method: 'POST', redirect: 'manual',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.auth.token}`, 'Idempotency-Key': item.id },
           body: JSON.stringify({ version: 1, event: item.event }),
         });
-        status = response.status;
-        const header = response.headers.get('Retry-After');
+        status = response.type === 'opaqueredirect' ? 302 : response.status;
+        const header = response.headers?.get('Retry-After');
         if (header) {
           const parsed = /^\d+$/.test(header) ? Number(header) * 1000 : Date.parse(header) - Date.now();
           if (Number.isFinite(parsed) && parsed > 0) retryAfter = parsed;
@@ -296,16 +317,16 @@
     try { await drainOutbox(); } catch (_) { await diagnostic('deliveryFailure', ''); }
   }
 
-  async function command(message) {
+  async function command(message, clientId) {
     if (message.version !== 1) throw new Error('unsupported version');
     switch (message.command) {
       case 'initialize': await configure(message.callbacks || null); return { status: 'success', value: null };
-      case 'claim': return { status: 'success', value: await claim(message.owner) };
+      case 'claim': return { status: 'success', value: await claim(message.owner, clientId || message.owner) };
       case 'pending': {
-        const events = await pending(message.owner, message.token);
+        const events = await pending(message.owner, message.token, clientId);
         return events ? { status: 'success', value: events } : { status: 'failure', error: { code: 'invalidState' } };
       }
-      case 'acknowledge': return await acknowledge(message.owner, message.token, message.eventIds || [])
+      case 'acknowledge': return await acknowledge(message.owner, message.token, message.eventIds || [], clientId)
         ? { status: 'success', value: null } : { status: 'failure', error: { code: 'invalidState' } };
       case 'bindPush': {
         if (!message.installationId || !message.sessionId) return { status: 'failure', error: { code: 'protocolFailure' } };
@@ -380,7 +401,7 @@
     });
     scope.addEventListener('message', event => {
       if (!event.data || event.data.jackfield !== 1 || !event.ports?.[0]) return;
-      event.waitUntil(command(event.data).then(result => event.ports[0].postMessage({ version: 1, ...result }))
+      event.waitUntil(command(event.data, event.source?.id).then(result => event.ports[0].postMessage({ version: 1, ...result }))
         .catch(() => event.ports[0].postMessage({ version: 1, status: 'failure', error: { code: 'platformFailure' } })));
     });
   }

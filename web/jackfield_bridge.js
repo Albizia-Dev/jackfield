@@ -82,12 +82,15 @@
 
   navigator.serviceWorker?.addEventListener('message', event => {
     if (event.data?.jackfield !== 1 || event.data.type !== 'event') return;
-    if (owned) for (const listener of listeners) listener(JSON.stringify(event.data.event));
+    if (owned && token && event.data.token === token) {
+      for (const listener of listeners) listener(JSON.stringify(event.data.event));
+    }
   });
 
   scope.JackfieldBridge = {
     invoke,
     claim,
+    async available() { try { await registration(); return true; } catch (_) { return false; } },
     listen(listener) { listeners.add(listener); },
     permission() { return scope.Notification?.permission || 'unsupported'; },
     async requestPermissionFromGesture() { return scope.Notification.requestPermission(); },
