@@ -1,14 +1,27 @@
 # Матрица проверки платформ
 
-Статус адаптера не равен результату ручного прогона. Эта матрица отражает состояние реализации и локальные проверки Task 16; удалённые GitHub Actions ещё не запускались. Команды и смысл workflow приведены в [CI](ci.md).
+**Не готово к шестиплатформенному выпуску.** Реализованы четыре адаптера:
+Android, iOS, macOS и Web. Windows/Linux зарегистрированы, но остаются
+scaffold/incomplete после явного переноса Tasks 11/12. Статус адаптера не равен
+результату ручного прогона. Ни один GitHub Actions workflow из этих commits
+ещё не запускался; ссылки на run отсутствуют. Эта матрица отражает свежий
+локальный `tool/verify.sh` на `6d9d0a9` от 2026-09-24. Команды и смысл
+workflow приведены в [CI](ci.md), условия выпуска — в
+[checklist](release-checklist.md).
 
 | Платформа | Адаптер | Автоматические проверки | Ручные OS/device/provider проверки |
 | --- | --- | --- | --- |
-| Android | Реализован | Локальный `tool/verify.sh android`: Kotlin/Robolectric unit, native callback fixture и debug APK прошли; CI не запущен | Не подтверждены на устройстве с FCM, lock screen, DND и force stop |
-| iOS | Реализован | Локальные Swift 36/36 (включая общий native callback fixture) и pod lint прошли; `tool/verify.sh apple` остановился на iOS simulator build до компиляции исходников из-за SwiftPM identity worktree; CI не запущен | Не подтверждены на устройстве с APNs/PushKit/CallKit, lock screen и завершённым процессом |
-| Web | Реализован | Локальный `tool/verify.sh web`: worker tests, JS/Wasm builds и smoke прошли; CI не запущен | Не подтверждены реальные Web Push, браузерное планирование background sync и поведение закрытой вкладки |
-| macOS | Реализован | Общий native callback fixture, Swift unit 36/36 и pod lint прошли локально; example build остаётся заблокированным gate из-за SwiftPM identity `jackfield-implementation`/`jackfield`; CI не запущен | Не подтверждены системные уведомления, actions, фоновая доставка и конкретный macOS host |
-| Windows | Не реализован: Task 11 отложен | `tool/verify.sh windows-scaffold` проверяет только scaffold/contract; CI не запущен | Не проверено |
-| Linux | Не реализован: Task 12 отложен | `tool/verify.sh linux-scaffold` проверяет только scaffold/contract; CI не запущен | Не проверено |
+| Android | Реализован | Свежий aggregate: Kotlin/Robolectric unit, native callback fixture и debug APK прошли; remote CI not run | Не подтверждены FCM, lock screen, DND, force-stop и OEM на устройстве |
+| iOS | Реализован | Свежий aggregate: Swift 36/36 и pod lint прошли; iOS simulator build остановился до source compilation из-за SwiftPM identity; remote CI not run | Не подтверждены APNs/PushKit/CallKit, lock screen и завершённый процесс на устройстве |
+| Web | Реализован | Свежий aggregate: worker 27/27, JS/Wasm release builds и smoke прошли; remote CI not run | Не подтверждены Web Push, закрытая вкладка, browser scheduling и notification interaction |
+| macOS | Реализован | Свежий aggregate: общий Swift 36/36 и pod lint прошли; macOS example build не достигнут после iOS blocker. Отдельный запуск Task 16 имел тот же SwiftPM identity failure; remote CI not run | Не подтверждены системные уведомления/actions, фоновая доставка и конкретный host |
+| Windows | Не реализован: Task 11 отложен | Свежий aggregate: `windows-scaffold` проверил только scaffold/contract; remote CI not run | Native call behavior и OS UI не проверены |
+| Linux | Не реализован: Task 12 отложен | Свежий aggregate: `linux-scaffold` проверил только scaffold/contract; remote CI not run | Native call behavior и OS UI не проверены |
 
-Локальный `tool/verify.sh dart` прошёл: формат, анализ, тесты примера, 248/248 публичных DartDoc и consistency checks; после последнего consistency-теста полный пакет `flutter test --no-pub` прошёл 74/74. `tool/verify.sh go` прошёл без Firebase credentials. Общий `tool/verify.sh` завершился ошибкой Apple example build на указанном SwiftPM identity blocker. Для сценариев см. [ручную проверку](manual-validation.md).
+Свежий aggregate выполнил Dart format/analyze, 74/74 package tests, example
+analyze/25/25 tests, 248/248 публичных DartDoc, consistency fixtures,
+Go test/vet/build без Firebase credentials и локальный secret-pattern scan.
+`tool/verify.sh` завершился с **exit 1** на указанном Apple blocker; это не
+общий PASS. Реальные APNs/FCM/Web Push, TLS/auth rotation, lock screen, DND,
+force-stop/process death, browser scheduling и системные уведомления остаются
+ручными gates. Для сценариев см. [ручную проверку](manual-validation.md).
