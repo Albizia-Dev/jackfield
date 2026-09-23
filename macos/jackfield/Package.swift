@@ -6,7 +6,7 @@ import PackageDescription
 let package = Package(
     name: "jackfield",
     platforms: [
-        .macOS("10.15")
+        .macOS("11.0")
     ],
     products: [
         .library(name: "jackfield", targets: ["jackfield"])
