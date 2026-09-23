@@ -1,4 +1,5 @@
 import 'identifiers.dart';
+import 'results.dart';
 
 /// The media requested for a call; Jackfield does not transport it.
 enum CallMedia {
@@ -119,14 +120,15 @@ enum EndReason {
 /// The current local view of one call.
 final class CallSnapshot {
   /// Creates a snapshot of a call.
-  const CallSnapshot({
+  CallSnapshot({
     required this.callId,
     required this.state,
     required this.media,
     this.caller,
     this.actionId,
     this.actionDeadline,
-  });
+    Iterable<CallActionReceipt> actionReceipts = const [],
+  }) : actionReceipts = List<CallActionReceipt>.unmodifiable(actionReceipts);
 
   /// The call attempt identifier.
   final CallId callId;
@@ -140,11 +142,33 @@ final class CallSnapshot {
   /// The other participant, when known.
   final Caller? caller;
 
-  /// The pending system action, when one exists.
+  /// The most recently accepted system action, including a completed one.
   final ActionId? actionId;
 
-  /// The deadline for [actionId], when one exists.
+  /// The deadline associated with [actionId], when one exists.
   final DateTime? actionDeadline;
+
+  /// Persisted outcomes needed to recognize completed action replays.
+  final List<CallActionReceipt> actionReceipts;
+}
+
+/// The known outcome of one application-owned action.
+final class CallActionReceipt {
+  /// Creates a durable action outcome.
+  const CallActionReceipt({
+    required this.actionId,
+    required this.succeeded,
+    this.error,
+  });
+
+  /// The identity of the action whose outcome is recorded.
+  final ActionId actionId;
+
+  /// Whether the action succeeded before its deadline.
+  final bool succeeded;
+
+  /// The typed failure when the action expired.
+  final JackfieldError? error;
 }
 
 /// The outcome of an application-owned action, such as connecting media.
