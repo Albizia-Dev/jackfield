@@ -41,6 +41,12 @@
     For more details:
     * https://docs.flutter.dev/platform-integration/web/initialization
   -->
+  <script src="assets/packages/jackfield/web/jackfield_bridge.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('jackfield_host_worker.js');
+    }
+  </script>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>
