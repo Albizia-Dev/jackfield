@@ -14,11 +14,14 @@ import 'package:jackfield/jackfield.dart';
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('getPlatformVersion test', (WidgetTester tester) async {
-    final Jackfield plugin = Jackfield();
-    final String? version = await plugin.getPlatformVersion();
-    // The version string depends on the host platform running the test, so
-    // just assert that some non-empty string is returned.
-    expect(version?.isNotEmpty, true);
+  testWidgets('adapter reports capabilities honestly', (
+    WidgetTester tester,
+  ) async {
+    final capabilities = await Jackfield.instance.capabilities();
+    expect(capabilities.platform, isNotEmpty);
+    if (capabilities.mechanism == JackfieldMechanism.unavailable) {
+      expect(capabilities.features, isEmpty);
+      expect(capabilities.reason, isNotEmpty);
+    }
   });
 }

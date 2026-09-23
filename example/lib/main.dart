@@ -1,6 +1,4 @@
 import 'package:flutter/material.dart';
-import 'dart:async';
-
 import 'package:flutter/services.dart';
 import 'package:jackfield/jackfield.dart';
 
@@ -16,26 +14,24 @@ class MyApp extends StatefulWidget {
 }
 
 class _MyAppState extends State<MyApp> {
-  String _platformVersion = 'Unknown';
-  final _jackfieldPlugin = Jackfield();
+  String _adapter = 'Loading';
+  final _jackfieldPlugin = Jackfield.instance;
 
   @override
   void initState() {
     super.initState();
-    initPlatformState();
+    loadCapabilities();
   }
 
-  // Platform messages are asynchronous, so we initialize in an async method.
-  Future<void> initPlatformState() async {
-    String platformVersion;
-    // Platform messages may fail, so we use a try/catch PlatformException.
-    // We also handle the message potentially returning null.
+  Future<void> loadCapabilities() async {
+    String adapter;
     try {
-      platformVersion =
-          await _jackfieldPlugin.getPlatformVersion() ??
-          'Unknown platform version';
+      final capabilities = await _jackfieldPlugin.capabilities();
+      adapter = '${capabilities.platform} / ${capabilities.mechanism.name}';
     } on PlatformException {
-      platformVersion = 'Failed to get platform version.';
+      adapter = 'Unavailable';
+    } on JackfieldProtocolException {
+      adapter = 'Invalid adapter response';
     }
 
     // If the widget was removed from the tree while the asynchronous platform
@@ -44,7 +40,7 @@ class _MyAppState extends State<MyApp> {
     if (!mounted) return;
 
     setState(() {
-      _platformVersion = platformVersion;
+      _adapter = adapter;
     });
   }
 
@@ -53,7 +49,7 @@ class _MyAppState extends State<MyApp> {
     return MaterialApp(
       home: Scaffold(
         appBar: AppBar(title: const Text('Plugin example app')),
-        body: Center(child: Text('Running on: $_platformVersion\n')),
+        body: Center(child: Text('Adapter: $_adapter')),
       ),
     );
   }

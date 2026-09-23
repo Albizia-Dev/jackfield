@@ -1,27 +1,22 @@
-// In order to *not* need this ignore, consider extracting the "web" version
-// of your plugin as a separate package, instead of inlining it in the same
-// package as the core of your plugin.
-// ignore: avoid_web_libraries_in_flutter
-
 import 'package:flutter_web_plugins/flutter_web_plugins.dart';
-import 'package:web/web.dart' as web;
 
 import 'jackfield_platform_interface.dart';
+import 'src/api/capabilities.dart';
 
-/// A web implementation of the JackfieldPlatform of the Jackfield plugin.
+/// Web registration placeholder until the durable browser adapter is installed.
 class JackfieldWeb extends JackfieldPlatform {
-  /// Constructs a JackfieldWeb
+  /// Creates an adapter that truthfully advertises no implemented features.
   JackfieldWeb();
 
-  /// Registers the web adapter with Flutter's plugin registry.
+  /// Registers the browser adapter with Flutter's plugin registry.
   static void registerWith(Registrar registrar) {
     JackfieldPlatform.instance = JackfieldWeb();
   }
 
-  /// Returns a [String] containing the version of the platform.
   @override
-  Future<String?> getPlatformVersion() async {
-    final version = web.window.navigator.userAgent;
-    return version;
-  }
+  Future<JackfieldCapabilities> capabilities() async =>
+      JackfieldCapabilities.unavailable(
+        platform: 'web',
+        reason: 'Browser adapter not implemented',
+      );
 }
