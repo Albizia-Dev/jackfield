@@ -14,7 +14,7 @@ A new Flutter plugin project.
   s.author           = { 'Your Company' => 'email@example.com' }
 
   s.source           = { :path => '.' }
-  s.source_files = 'jackfield/Sources/jackfield/**/*'
+  s.source_files = 'Classes/**/*.swift'
 
   # If your plugin requires a privacy manifest, for example if it collects user
   # data, update the PrivacyInfo.xcprivacy file to describe your plugin's
@@ -26,5 +26,7 @@ A new Flutter plugin project.
 
   s.platform = :osx, '11.0'
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }
-  s.swift_version = '5.0'
+  s.swift_version = '5.9'
+  s.frameworks = 'UserNotifications', 'Security'
+  s.libraries = 'sqlite3'
 end
