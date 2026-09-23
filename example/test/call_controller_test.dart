@@ -256,6 +256,120 @@ void main() {
     expect(controller.currentCallId, isNull);
   });
 
+  test('late incoming success cannot reselect an ended call', () async {
+    final plugin = RecordingJackfield()
+      ..incomingResult = Completer<JackfieldResult<CallSnapshot>>();
+    final controller = CallController(
+      jackfield: plugin,
+      signaling: ControlledSignaling(),
+    );
+    final reporting = controller.incoming(callId: 'call-1', party: 'Alice');
+
+    await controller.handle(
+      CallEnded(
+        callId: const CallId('call-1'),
+        eventId: const EventId('incoming-ended'),
+        sequence: 2,
+        occurredAt: DateTime.utc(2026),
+        reason: EndReason.remote,
+      ),
+    );
+    plugin.incomingResult!.complete(
+      JackfieldSuccess(_snapshot(CallState.ringing)),
+    );
+    await reporting;
+
+    expect(controller.currentCallId, isNull);
+  });
+
+  test('late outgoing success cannot reselect an ended call', () async {
+    final plugin = RecordingJackfield()
+      ..outgoingResult = Completer<JackfieldResult<CallSnapshot>>();
+    final controller = CallController(
+      jackfield: plugin,
+      signaling: ControlledSignaling(),
+    );
+    final starting = controller.outgoing(callId: 'call-1', party: 'Bob');
+
+    await controller.handle(
+      CallEnded(
+        callId: const CallId('call-1'),
+        eventId: const EventId('outgoing-ended'),
+        sequence: 2,
+        occurredAt: DateTime.utc(2026),
+        reason: EndReason.remote,
+      ),
+    );
+    plugin.outgoingResult!.complete(
+      JackfieldSuccess(_snapshot(CallState.connecting)),
+    );
+    await starting;
+
+    expect(controller.currentCallId, isNull);
+  });
+
+  test('live incoming snapshot remains selectable', () async {
+    final plugin = RecordingJackfield()
+      ..incomingResult = Completer<JackfieldResult<CallSnapshot>>();
+    final controller = CallController(
+      jackfield: plugin,
+      signaling: ControlledSignaling(),
+    );
+    final reporting = controller.incoming(callId: 'call-1', party: 'Alice');
+    plugin.incomingResult!.complete(
+      JackfieldSuccess(_snapshot(CallState.ringing)),
+    );
+    await reporting;
+
+    expect(controller.currentCallId, const CallId('call-1'));
+  });
+
+  test('live outgoing snapshot remains selectable', () async {
+    final plugin = RecordingJackfield()
+      ..outgoingResult = Completer<JackfieldResult<CallSnapshot>>();
+    final controller = CallController(
+      jackfield: plugin,
+      signaling: ControlledSignaling(),
+    );
+    final starting = controller.outgoing(callId: 'call-1', party: 'Bob');
+    plugin.outgoingResult!.complete(
+      JackfieldSuccess(_snapshot(CallState.connecting)),
+    );
+    await starting;
+
+    expect(controller.currentCallId, const CallId('call-1'));
+  });
+
+  for (final state in [CallState.ending, CallState.ended, CallState.failed]) {
+    test('incoming $state snapshot is not selected', () async {
+      final plugin = RecordingJackfield()
+        ..incomingResult = Completer<JackfieldResult<CallSnapshot>>();
+      final controller = CallController(
+        jackfield: plugin,
+        signaling: ControlledSignaling(),
+      );
+      final reporting = controller.incoming(callId: 'call-1', party: 'Alice');
+      plugin.incomingResult!.complete(JackfieldSuccess(_snapshot(state)));
+      await reporting;
+
+      expect(controller.currentCallId, isNull);
+    });
+
+    test('outgoing $state snapshot is not selected', () async {
+      final plugin = RecordingJackfield()
+        ..outgoingResult = Completer<JackfieldResult<CallSnapshot>>();
+      final controller = CallController(
+        jackfield: plugin,
+        signaling: ControlledSignaling(),
+      );
+      final starting = controller.outgoing(callId: 'call-1', party: 'Bob');
+      plugin.outgoingResult!.complete(JackfieldSuccess(_snapshot(state)));
+      await starting;
+
+      expect(controller.currentCallId, isNull);
+    });
+  }
+
   test('disposing during answer still completes and acknowledges it', () async {
     final plugin = RecordingJackfield();
     final signaling = ControlledSignaling();
@@ -300,6 +414,12 @@ void main() {
   );
 }
 
+CallSnapshot _snapshot(CallState state) => CallSnapshot(
+  callId: const CallId('call-1'),
+  state: state,
+  media: CallMedia.audio,
+);
+
 final class ControlledSignaling implements DemoSignaling {
   final _result = Completer<bool>();
   int connectCount = 0;
@@ -322,6 +442,8 @@ final class RecordingJackfield implements Jackfield {
   bool endSucceeds = false;
   Completer<JackfieldResult<void>>? initialization;
   Completer<JackfieldCapabilities>? capability;
+  Completer<JackfieldResult<CallSnapshot>>? incomingResult;
+  Completer<JackfieldResult<CallSnapshot>>? outgoingResult;
 
   @override
   Future<JackfieldResult<void>> completeAction(
@@ -402,14 +524,16 @@ final class RecordingJackfield implements Jackfield {
   @override
   Future<JackfieldResult<CallSnapshot>> reportIncomingCall(
     IncomingCall call,
-  ) async =>
-      const JackfieldFailure(JackfieldError(JackfieldErrorCode.unsupported));
+  ) async => incomingResult == null
+      ? const JackfieldFailure(JackfieldError(JackfieldErrorCode.unsupported))
+      : await incomingResult!.future;
 
   @override
   Future<JackfieldResult<CallSnapshot>> startOutgoingCall(
     OutgoingCall call,
-  ) async =>
-      const JackfieldFailure(JackfieldError(JackfieldErrorCode.unsupported));
+  ) async => outgoingResult == null
+      ? const JackfieldFailure(JackfieldError(JackfieldErrorCode.unsupported))
+      : await outgoingResult!.future;
 
   @override
   Future<JackfieldResult<CallSnapshot>> updateCall(CallUpdate update) async =>

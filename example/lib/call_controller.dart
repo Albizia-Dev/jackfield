@@ -101,7 +101,7 @@ final class CallController extends ChangeNotifier {
           media: CallMedia.audio,
         ),
       );
-      if (result is JackfieldSuccess<CallSnapshot>) currentCallId = id;
+      _selectLiveCall(id, result);
       _showResult('Входящий $callId', result);
     } catch (error) {
       _failure('Входящий', error);
@@ -118,7 +118,7 @@ final class CallController extends ChangeNotifier {
           media: CallMedia.audio,
         ),
       );
-      if (result is JackfieldSuccess<CallSnapshot>) currentCallId = id;
+      _selectLiveCall(id, result);
       _showResult('Исходящий $callId', result);
     } catch (error) {
       _failure('Исходящий', error);
@@ -137,6 +137,22 @@ final class CallController extends ChangeNotifier {
     } catch (error) {
       _failure('Завершение', error);
     }
+  }
+
+  void _selectLiveCall(CallId id, JackfieldResult<CallSnapshot> result) {
+    if (result is! JackfieldSuccess<CallSnapshot> ||
+        _endedCalls.contains(id) ||
+        result.value.callId != id) {
+      return;
+    }
+    final state = result.value.state;
+    // A call already ending is no longer useful as the manual selection.
+    if (state == CallState.ending ||
+        state == CallState.ended ||
+        state == CallState.failed) {
+      return;
+    }
+    currentCallId = id;
   }
 
   Future<void> handle(JackfieldEvent event) async {
