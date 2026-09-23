@@ -4,6 +4,15 @@ import XCTest
 @testable import JackfieldCore
 
 final class EventStoreTests: XCTestCase {
+  func testReplayQueryCompletionRejectsSQLiteReadFailures() throws {
+    XCTAssertNoThrow(try EventStore.requireQueryCompleted(SQLITE_DONE))
+    for status in [SQLITE_BUSY, SQLITE_IOERR] {
+      XCTAssertThrowsError(try EventStore.requireQueryCompleted(status)) { error in
+        XCTAssertEqual(error as? JackfieldCoreError, .platformFailure)
+      }
+    }
+  }
+
   func testAppendSurvivesReopenAndReceiptsAreIndependent() async throws {
     let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
     defer { try? FileManager.default.removeItem(atPath: path) }

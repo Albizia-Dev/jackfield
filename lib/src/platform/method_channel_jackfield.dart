@@ -183,73 +183,107 @@ Stream<T> _receiveSafeBroadcastStream<T>(
   final control = MethodChannel(channel.name, channel.codec, messenger);
   late StreamController<T> controller;
 
-  void reportTransportFailure(Object error, {required bool cancelling}) {
-    final safe = error is MissingPluginException
-        ? const JackfieldTransportException.unsupported()
-        : const JackfieldTransportException.platformFailure();
-    if (!cancelling && controller.hasListener && !controller.isClosed) {
-      controller.addError(safe, StackTrace.empty);
-    } else {
-      // There may be no subscriber left to receive cancellation errors.
-      FlutterError.reportError(
-        FlutterErrorDetails(
-          exception: safe,
-          stack: StackTrace.empty,
-          library: 'jackfield',
-          context: ErrorDescription(
-            'while changing a Jackfield stream subscription',
+  StreamController<T> createController() {
+    late StreamController<T> current;
+
+    void reportTransportFailure(Object error, {required bool cancelling}) {
+      final safe = error is MissingPluginException
+          ? const JackfieldTransportException.unsupported()
+          : const JackfieldTransportException.platformFailure();
+      if (!cancelling && current.hasListener && !current.isClosed) {
+        current.addError(safe, StackTrace.empty);
+      } else {
+        // There may be no subscriber left to receive cancellation errors.
+        FlutterError.reportError(
+          FlutterErrorDetails(
+            exception: safe,
+            stack: StackTrace.empty,
+            library: 'jackfield',
+            context: ErrorDescription(
+              'while changing a Jackfield stream subscription',
+            ),
           ),
-        ),
-      );
+        );
+      }
     }
-  }
 
-  Future<void> changeSubscription(String method) async {
-    try {
-      await control.invokeMethod<void>(method, WireCodec.encodeQuery());
-    } catch (error) {
-      reportTransportFailure(error, cancelling: method == 'cancel');
-    }
-  }
-
-  controller = StreamController<T>.broadcast(
-    onListen: () {
+    Future<void> changeSubscription(String method) async {
       try {
-        messenger.setMessageHandler(channel.name, (reply) async {
-          if (reply == null) {
-            await controller.close();
+        await control.invokeMethod<void>(method, WireCodec.encodeQuery());
+      } catch (error) {
+        reportTransportFailure(error, cancelling: method == 'cancel');
+      }
+    }
+
+    current = StreamController<T>.broadcast(
+      onListen: () {
+        try {
+          messenger.setMessageHandler(channel.name, (reply) async {
+            if (current.isClosed) return null;
+            if (reply == null) {
+              await current.close();
+              return null;
+            }
+            try {
+              current.add(decode(channel.codec.decodeEnvelope(reply)));
+            } on PlatformException {
+              current.addError(
+                const JackfieldTransportException.platformFailure(),
+                StackTrace.empty,
+              );
+            } on JackfieldProtocolException catch (error) {
+              current.addError(error, StackTrace.empty);
+            } catch (_) {
+              current.addError(
+                const JackfieldProtocolException('Invalid transport envelope'),
+                StackTrace.empty,
+              );
+            }
             return null;
-          }
-          try {
-            controller.add(decode(channel.codec.decodeEnvelope(reply)));
-          } on PlatformException {
-            controller.addError(
-              const JackfieldTransportException.platformFailure(),
-              StackTrace.empty,
-            );
-          } on JackfieldProtocolException catch (error) {
-            controller.addError(error, StackTrace.empty);
-          } catch (_) {
-            controller.addError(
-              const JackfieldProtocolException('Invalid transport envelope'),
-              StackTrace.empty,
-            );
-          }
-          return null;
-        });
-        unawaited(changeSubscription('listen'));
-      } catch (error) {
-        reportTransportFailure(error, cancelling: false);
-      }
-    },
-    onCancel: () {
-      try {
-        messenger.setMessageHandler(channel.name, null);
-        unawaited(changeSubscription('cancel'));
-      } catch (error) {
-        reportTransportFailure(error, cancelling: true);
-      }
-    },
+          });
+          unawaited(changeSubscription('listen'));
+        } catch (error) {
+          reportTransportFailure(error, cancelling: false);
+        }
+      },
+      onCancel: () {
+        if (!identical(controller, current)) return;
+        try {
+          messenger.setMessageHandler(channel.name, null);
+          unawaited(changeSubscription('cancel'));
+        } catch (error) {
+          reportTransportFailure(error, cancelling: true);
+        }
+      },
+    );
+    return current;
+  }
+
+  controller = createController();
+  return _RecoverableBroadcastStream(() {
+    if (controller.isClosed) controller = createController();
+    return controller.stream;
+  });
+}
+
+class _RecoverableBroadcastStream<T> extends Stream<T> {
+  _RecoverableBroadcastStream(this._current);
+
+  final Stream<T> Function() _current;
+
+  @override
+  bool get isBroadcast => true;
+
+  @override
+  StreamSubscription<T> listen(
+    void Function(T event)? onData, {
+    Function? onError,
+    void Function()? onDone,
+    bool? cancelOnError,
+  }) => _current().listen(
+    onData,
+    onError: onError,
+    onDone: onDone,
+    cancelOnError: cancelOnError,
   );
-  return controller.stream;
 }

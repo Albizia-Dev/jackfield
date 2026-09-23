@@ -98,10 +98,47 @@ void main() {
             'removed': false,
           };
 
-    Future<void> send(ByteData bytes) async {
+    Future<void> send(ByteData? bytes) async {
       await messenger.handlePlatformMessage(name, bytes, (_) {});
       await Future<void>.delayed(Duration.zero);
     }
+
+    test(
+      '$name can subscribe again after native error and stream end',
+      () async {
+        var listens = 0;
+        messenger.setMockMethodCallHandler(MethodChannel(name), (call) async {
+          if (call.method == 'listen') listens++;
+          return null;
+        });
+        final firstErrors = <Object>[];
+        final firstDone = Completer<void>();
+        stream().listen(
+          (_) {},
+          onError: firstErrors.add,
+          onDone: firstDone.complete,
+        );
+        await Future<void>.delayed(Duration.zero);
+        await send(nativeFailure());
+        await send(null);
+        await firstDone.future;
+        expect(firstErrors, hasLength(1));
+        expectSanitized(firstErrors.single);
+
+        final replayed = <Object>[];
+        final second = stream().listen(replayed.add);
+        addTearDown(second.cancel);
+        final secondObserver = <Object>[];
+        final observer = stream().listen(secondObserver.add);
+        addTearDown(observer.cancel);
+        await Future<void>.delayed(Duration.zero);
+        expect(listens, 2);
+        await send(const StandardMethodCodec().encodeSuccessEnvelope(payload));
+        expect(replayed, hasLength(1));
+        expect(secondObserver, hasLength(1));
+        expect(reports, isEmpty);
+      },
+    );
 
     test(
       '$name sanitizes error envelopes and delivers subsequent valid data',

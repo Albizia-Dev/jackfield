@@ -66,6 +66,9 @@ public actor EventStore {
     }
   }
   private func exec(_ sql: String) throws { try Self.exec(db, sql) }
+  static func requireQueryCompleted(_ status: Int32) throws {
+    guard status == SQLITE_DONE else { throw JackfieldCoreError.platformFailure }
+  }
   private func statement(_ sql: String) throws -> OpaquePointer? {
     var result: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &result, nil) == SQLITE_OK else { throw JackfieldCoreError.platformFailure }
@@ -190,10 +193,13 @@ public actor EventStore {
     let stmt = try statement("SELECT json FROM events WHERE \(whereClause) ORDER BY call_id,sequence")
     defer { sqlite3_finalize(stmt) }
     var result: [WireEnvelope] = []
-    while sqlite3_step(stmt) == SQLITE_ROW {
+    var status = sqlite3_step(stmt)
+    while status == SQLITE_ROW {
       guard let bytes = sqlite3_column_blob(stmt, 0) else { throw JackfieldCoreError.platformFailure }
       result.append(try decoder.decode(WireEnvelope.self, from: Data(bytes: bytes, count: Int(sqlite3_column_bytes(stmt, 0)))))
+      status = sqlite3_step(stmt)
     }
+    try Self.requireQueryCompleted(status)
     return result
   }
   public func pendingFlutter() throws -> [WireEnvelope] { try events("flutter_ack=0") }
