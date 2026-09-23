@@ -36,8 +36,12 @@ class CallController(
         synchronized(ConfigurationLock) {
             // An explicit replacement can recover unreadable ciphertext without reading its old token.
             val previous = try { configuration.load() } catch (error: Exception) { recordError(error); null }
+            // Upgrade a v1 pause before the file write, so a crash still leaves a comparison baseline.
+            if (callbacks != null && dao.httpPaused() && dao.state()?.rejectedAuthFingerprint == null) {
+                dao.pauseForAuthentication(previous?.authFingerprint() ?: "unreadable")
+            }
             configuration.save(callbacks)
-            if (callbacks != null && (callbacks.token != previous?.token || callbacks.endpoint != previous.endpoint)) dao.setHttpPaused(false)
+            if (callbacks != null) dao.resumeIfCredentialsChanged(callbacks.authFingerprint())
         }
         if (callbacks != null) dao.pendingCallIds().forEach { schedule(it, 0) }
     }

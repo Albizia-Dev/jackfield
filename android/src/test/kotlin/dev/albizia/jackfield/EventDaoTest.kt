@@ -1,6 +1,7 @@
 package dev.albizia.jackfield
 
 import android.content.Context
+import android.database.sqlite.SQLiteDatabase
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import dev.albizia.jackfield.store.*
@@ -68,6 +69,30 @@ class EventDaoTest {
             assertTrue(second.events().httpPaused())
             assertEquals("duplicate", second.events().persist(call(sequence = 1), event(), 10))
         } finally { second.close(); context.deleteDatabase(path) }
+    }
+
+    @Test fun `v1 database migrates without dropping paused state or pending events`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val path = context.noBackupFilesDir.resolve("migration-test.db").absolutePath
+        context.deleteDatabase(path)
+        SQLiteDatabase.openOrCreateDatabase(path, null).use { legacy ->
+            legacy.execSQL("CREATE TABLE calls (callId TEXT NOT NULL PRIMARY KEY, state TEXT NOT NULL, media TEXT NOT NULL, callerId TEXT NOT NULL, callerName TEXT NOT NULL, sequence INTEGER NOT NULL, actionId TEXT, actionDeadline INTEGER, actionReceipts TEXT NOT NULL)")
+            legacy.execSQL("CREATE TABLE events (eventId TEXT NOT NULL PRIMARY KEY, callId TEXT NOT NULL, sequence INTEGER NOT NULL, occurredAt INTEGER NOT NULL, type TEXT NOT NULL, actionId TEXT, deadline INTEGER, reason TEXT, flutterAcknowledged INTEGER NOT NULL, httpState TEXT NOT NULL, attempts INTEGER NOT NULL, nextAttemptAt INTEGER NOT NULL, expiresAt INTEGER NOT NULL)")
+            legacy.execSQL("CREATE UNIQUE INDEX index_events_callId_sequence ON events (callId, sequence)")
+            legacy.execSQL("CREATE INDEX index_events_httpState ON events (httpState)")
+            legacy.execSQL("CREATE TABLE adapter_state (id INTEGER NOT NULL PRIMARY KEY, httpPaused INTEGER NOT NULL, lastError TEXT)")
+            legacy.execSQL("CREATE TABLE push_tokens (provider TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (provider, value))")
+            legacy.execSQL("INSERT INTO adapter_state VALUES (1, 1, NULL)")
+            legacy.execSQL("INSERT INTO events VALUES ('event-1', 'call-1', 1, 1000, 'ended', NULL, NULL, 'remote', 0, 'pending', 0, 1000, 86000000)")
+            legacy.version = 1
+        }
+        val migrated = Room.databaseBuilder(context, JackfieldDatabase::class.java, path)
+            .addMigrations(JackfieldDatabase.MIGRATION_1_2).allowMainThreadQueries().build()
+        try {
+            assertTrue(migrated.events().httpPaused())
+            assertNull(migrated.events().state()?.rejectedAuthFingerprint)
+            assertEquals(listOf("event-1"), migrated.events().pendingHttp().map { it.eventId })
+        } finally { migrated.close(); context.deleteDatabase(path) }
     }
 }
 

@@ -30,7 +30,17 @@ abstract class EventDao {
     @Delete abstract fun removeToken(token: PushTokenEntity)
 
     fun httpPaused(): Boolean = state()?.httpPaused ?: false
-    @Transaction open fun setHttpPaused(paused: Boolean) { saveState((state() ?: AdapterState()).copy(httpPaused = paused)) }
+    @Transaction open fun setHttpPaused(paused: Boolean) {
+        val current = state() ?: AdapterState()
+        saveState(current.copy(httpPaused = paused, rejectedAuthFingerprint = if (paused) current.rejectedAuthFingerprint else null))
+    }
+    @Transaction open fun pauseForAuthentication(fingerprint: String) { saveState((state() ?: AdapterState()).copy(httpPaused = true, rejectedAuthFingerprint = fingerprint)) }
+    @Transaction open fun resumeIfCredentialsChanged(fingerprint: String): Boolean {
+        val current = state() ?: return false
+        if (!current.httpPaused || current.rejectedAuthFingerprint == null || current.rejectedAuthFingerprint == fingerprint) return false
+        saveState(current.copy(httpPaused = false, rejectedAuthFingerprint = null))
+        return true
+    }
     @Transaction open fun recordError(code: String?) { saveState((state() ?: AdapterState()).copy(lastError = code)) }
 
     @Transaction open fun persist(snapshot: CallEntity, event: EventEntity?, limit: Int): String {

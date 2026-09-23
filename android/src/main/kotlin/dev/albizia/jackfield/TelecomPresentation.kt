@@ -97,8 +97,12 @@ internal class TelecomPresentation(
     override suspend fun end(callId: String) {
         notifications.end(callId)
         controls[callId]?.let { control ->
-            if (control.disconnect(DisconnectCause(DisconnectCause.LOCAL)) !is CallControlResult.Success) throw JackfieldFailure("temporarilyUnavailable")
-            controls.remove(callId, control)
+            try {
+                if (control.disconnect(DisconnectCause(DisconnectCause.LOCAL)) !is CallControlResult.Success) throw JackfieldFailure("temporarilyUnavailable")
+            } finally {
+                // addCall completes after either result and removes this session's control.
+                controls.remove(callId, control)
+            }
         }
     }
 }

@@ -22,7 +22,7 @@ import kotlin.test.*
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class TelecomPresentationTest {
-    @Test fun `failed system disconnect retains control so server end can retry`() = runTest {
+    @Test fun `failed system disconnect releases completed Telecom session and repeat end is idempotent`() = runTest {
         val context = ApplicationProvider.getApplicationContext<Application>()
         var disconnects = 0
         val controls = mutableMapOf<String, CallControlScope>("call-1" to object : CallControlScope {
@@ -34,7 +34,7 @@ class TelecomPresentationTest {
             override suspend fun requestEndpointChange(endpoint: CallEndpointCompat) = CallControlResult.Success()
             override suspend fun disconnect(disconnectCause: DisconnectCause): CallControlResult {
                 disconnects++
-                return if (disconnects == 1) CallControlResult.Error(1) else CallControlResult.Success()
+                return CallControlResult.Error(1)
             }
             override val currentCallEndpoint: Flow<CallEndpointCompat> = emptyFlow()
             override val availableEndpoints: Flow<List<CallEndpointCompat>> = emptyFlow()
@@ -42,8 +42,9 @@ class TelecomPresentationTest {
         })
         val presentation = TelecomPresentation(context, this, controls)
         assertFailsWith<JackfieldFailure> { presentation.end("call-1") }
+        assertTrue(controls.isEmpty())
         presentation.end("call-1")
-        assertEquals(2, disconnects)
+        assertEquals(1, disconnects)
         assertTrue(controls.isEmpty())
     }
 

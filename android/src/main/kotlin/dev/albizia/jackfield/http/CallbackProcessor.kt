@@ -72,7 +72,7 @@ class CallbackProcessor(
                 outcome.status == 401 || outcome.status == 403 -> {
                     // Ignore an obsolete rejection if credentials rotated during the request.
                     val paused = synchronized(ConfigurationLock) {
-                        if (configuration() == config) { dao.setHttpPaused(true); true } else false
+                        if (configuration()?.authFingerprint() == config.authFingerprint()) { dao.pauseForAuthentication(config.authFingerprint()); true } else false
                     }
                     if (paused) return null
                 }

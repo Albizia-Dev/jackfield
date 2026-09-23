@@ -54,7 +54,7 @@ data class EventEntity(
 }
 
 @Entity(tableName = "adapter_state")
-data class AdapterState(@PrimaryKey val id: Int = 1, val httpPaused: Boolean = false, val lastError: String? = null)
+data class AdapterState(@PrimaryKey val id: Int = 1, val httpPaused: Boolean = false, val lastError: String? = null, val rejectedAuthFingerprint: String? = null)
 
 @Entity(tableName = "push_tokens", primaryKeys = ["provider", "value"])
 data class PushTokenEntity(val provider: String, val value: String)

@@ -130,6 +130,38 @@ class CallControllerTest {
         assertFalse(db.events().httpPaused())
     }
 
+    @Test fun `rotation saved before crash resumes paused callbacks on next initialize`() = runTest {
+        controller.initialize(callbacks)
+        controller.reportIncoming(incoming)
+        controller.requestAnswer("call-1", "action-1", 6000)
+        CallbackProcessor(db.events(), configuration::load, HttpTransport { HttpOutcome(401) }, { now }).run("call-1")
+        assertTrue(db.events().httpPaused())
+        controller.initialize(callbacks)
+        assertTrue(db.events().httpPaused())
+        val rotated = callbacks.copy(token = "rotated")
+        configuration.save(rotated) // Durable file write completed; process died before Room unpause.
+        val restarted = CallController(db, object : CallPresentation {
+            override val mechanism = "systemNotification"
+            override fun permissions() = mapOf("notifications" to "granted")
+            override suspend fun show(call: CallEntity, incoming: Boolean) {}
+            override suspend fun update(call: CallEntity) {}
+            override suspend fun activate(call: CallEntity) {}
+            override suspend fun end(callId: String) {}
+        }, configuration, { _, _ -> })
+        restarted.initialize(rotated)
+        assertFalse(db.events().httpPaused())
+    }
+
+    @Test fun `legacy pause gets rejected fingerprint before a crashing credential save`() = runTest {
+        controller.initialize(callbacks)
+        db.events().setHttpPaused(true) // v1 row has no rejected fingerprint.
+        val rotated = callbacks.copy(token = "rotated")
+        configuration.crashAfterSave = true
+        assertFailsWith<IllegalStateException> { controller.initialize(rotated) }
+        controller.initialize(rotated)
+        assertFalse(db.events().httpPaused())
+    }
+
     @Test fun `channel backend validates commands and returns full canonical snapshots`() = runTest {
         val backend = AndroidChannelBackend(controller)
         assertEquals(mapOf("version" to 1, "status" to "success", "value" to null), backend.handle("initialize", mapOf("version" to 1)))
@@ -149,6 +181,10 @@ internal val callbacks = CallbackConfiguration("https://example.test/callback", 
 internal class MemoryConfiguration : ConfigurationStore {
     private var config: CallbackConfiguration? = null
     var readFailure = false
+    var crashAfterSave = false
     override fun load(): CallbackConfiguration? { if (readFailure) throw IllegalStateException("secret"); return config }
-    override fun save(value: CallbackConfiguration?) { config = value; readFailure = false }
+    override fun save(value: CallbackConfiguration?) {
+        config = value; readFailure = false
+        if (crashAfterSave) { crashAfterSave = false; throw IllegalStateException("simulated process death") }
+    }
 }

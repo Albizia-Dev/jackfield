@@ -8,6 +8,8 @@ import dev.albizia.jackfield.Wire
 import org.json.JSONObject
 import java.io.File
 import java.security.KeyStore
+import java.security.MessageDigest
+import java.nio.ByteBuffer
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -15,6 +17,18 @@ import javax.crypto.spec.GCMParameterSpec
 
 data class CallbackConfiguration(val endpoint: String, val token: String, val timeToLiveMs: Long, val maxPendingEvents: Int) {
     override fun toString() = "CallbackConfiguration(redacted)"
+    fun authFingerprint(): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        for (value in listOf(endpoint, token)) {
+            val bytes = value.toByteArray(Charsets.UTF_8)
+            digest.update(ByteBuffer.allocate(4).putInt(bytes.size).array())
+            digest.update(bytes)
+        }
+        return digest.digest().joinToString("") { byte ->
+            val unsigned = byte.toInt() and 0xff
+            "${Character.forDigit(unsigned ushr 4, 16)}${Character.forDigit(unsigned and 15, 16)}"
+        }
+    }
 }
 
 interface ConfigurationStore {
