@@ -1,0 +1,6 @@
+*.json
+!.env.example
+.env
+*.key
+*.pem
+service-account*
