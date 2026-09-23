@@ -9,6 +9,12 @@ scaffold/incomplete после явного переноса Tasks 11/12. Ста
 workflow приведены в [CI](ci.md), условия выпуска — в
 [checklist](release-checklist.md).
 
+Функциональные пробелы исходного контракта также открыты: Web outgoing,
+iOS reject, mute/hold и явная координация доступной системной аудиосессии.
+Они требуют реализации или согласованного изменения объёма выпуска; device
+test не способен подтвердить отсутствующую функцию. iOS reject не включён в
+список проверок уже реализованного поведения.
+
 | Платформа | Адаптер | Автоматические проверки | Ручные OS/device/provider проверки |
 | --- | --- | --- | --- |
 | Android | Реализован | Свежий aggregate: Kotlin/Robolectric unit, native callback fixture и debug APK прошли; remote CI not run | Не подтверждены FCM, lock screen, DND, force-stop и OEM на устройстве |

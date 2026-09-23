@@ -15,7 +15,8 @@ example build до компиляции исходников: worktree назы�
 | Требование | Подтверждено в коде/локальных тестах | Неподтверждённая граница |
 | --- | --- | --- |
 | Один типизированный Flutter-пакет, единый API и шесть регистраций | `pubspec.yaml` регистрирует все шесть; `Jackfield.instance` предоставляет команды, события, diagnostics и capabilities; wire v1 проверен canonical fixtures | Реально реализованы четыре адаптера; Windows/Linux только scaffold |
-| Входящий и исходящий звонок, системное представление, действия | Android, iOS и macOS имеют оба потока и платформенные unit tests; Web worker проверяет входящий и notification actions; неподдерживаемые функции честно не заявляются в capabilities | Web не заявляет outgoing; mute/hold не заявлены текущими адаптерами; Android/iOS/macOS/Web не проверены в реальном системном UI |
+| Входящий и исходящий звонок, системное представление, действия | Android, iOS и macOS имеют оба потока и платформенные unit tests; Web worker проверяет входящий и notification actions; неподдерживаемые функции честно не заявляются в capabilities | Web outgoing, iOS reject и mute/hold требуют реализации либо согласованного изменения исходного контракта; работа заявленных действий в реальном системном UI не проверена |
+| Координация доступной системной аудиосессии | Адаптеры оставляют медиатранспорт приложению; Android интегрируется с Core-Telecom, iOS с CallKit | В коде нет явной координации audio focus/`AVAudioSession` или её публичного контракта; macOS guide прямо сообщает об отсутствии управления аудиосессией. Это функциональный пробел, а не пропущенный device test |
 | Долговечный replay, монотонный `sequence` внутри `callId`, idempotency | Dart journal/state-machine tests, Android Room/reopen, Swift SQLite/reopen и Web IndexedDB/worker tests покрывают сохранение, порядок и повторы | Остановка Flutter, смерть процесса, миграции и повторный запуск на целевых устройствах/браузерах остаются ручным gate |
 | Отдельные `completeAction`, Flutter ACK и HTTP receipt | Dart/native/worker tests проверяют независимость; HTTP success не подтверждает Flutter inbox; action receipts сохраняются | Нужен сквозной опыт с реальным действием ОС, signal/media приложением и callback сервером |
 | Опциональный автономный HTTPS callback | Реализованы очереди, TTL, bounded retry, `Retry-After`, 401/403 pause, credential rotation, idempotency header и fixture conformance для Android/Darwin/Web; unit и loopback проверки прошли | Реальный TLS endpoint, auth rotation при сетевых отказах, фоновые ограничения ОС и браузерное расписание не проверены |
@@ -42,14 +43,23 @@ build из-за SwiftPM identity; macOS example build в этом общем п�
 
 ## Открытые условия перед стабильным выпуском
 
+- **Функциональные блокеры исходного контракта:** реализовать Web outgoing;
+  iOS reject как отдельное действие с корректным `ended(reason: rejected)`;
+  mute/hold там, где они обещаны исходным дизайном, с типизированными
+  действиями/событиями и честным capability report; координацию доступной
+  системной аудиосессии без владения медиа. Альтернатива каждому пункту —
+  явно согласовать изменение объёма будущего выпуска и обновить публичный
+  контракт. Текущие `unsupported`/отсутствие feature являются честным
+  поведением API, но не выполнением этих исходных требований.
 - Завершить Windows и Linux native adapters и проверку вызовов, либо изменить
   объявленную цель продукта и registration/metadata отдельным решением.
 - Собрать iOS simulator и macOS example в checkout с корректной SwiftPM
   identity; затем получить реальные GitHub Actions run URL и результаты для
   Dart, Android, Apple, Web, Go, Windows/Linux scaffold и secret scan.
-- Протестировать Android и iOS на устройствах: FCM/APNs/PushKit, входящий и
-  исходящий звонок, ответ/отклонение/завершение, lock screen, DND,
-  force-stop, процесс без Flutter, expiry, OEM notification policy.
+- Протестировать уже реализованные действия Android и iOS на устройствах:
+  FCM/APNs/PushKit, входящий и исходящий звонок, ответ/завершение и Android
+  reject, lock screen, DND, force-stop, процесс без Flutter, expiry и OEM
+  notification policy. iOS reject проверять только после его реализации.
 - Протестировать macOS host notifications/actions и фоновый запуск; Web Push,
   закрытую вкладку, Service Worker eviction, Background/Periodic Sync и
   notification interaction в поддерживаемых браузерах.

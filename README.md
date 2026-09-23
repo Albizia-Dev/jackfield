@@ -6,7 +6,9 @@ Flutter-плагин для системного представления вх
 локальный Apple example build заблокирован SwiftPM identity текущего worktree,
 GitHub Actions и реальные device/provider сценарии ещё не запускались.
 [Проверка перед выпуском](docs/release-checklist.md) фиксирует точные gates и
-открытые условия.
+открытые условия. Из исходного контракта также не реализованы Web outgoing,
+iOS reject, mute/hold и явная координация системной аудиосессии; для их снятия
+нужна реализация либо согласованное изменение объёма выпуска.
 
 Jackfield владеет локальным состоянием и системным UI/уведомлением. Авторизация, серверная сессия, сигналинг и аудио/видео остаются в приложении. `server_example/` — необязательный ручной стенд на Go с FCM; библиотека от него не зависит.
 
@@ -37,13 +39,18 @@ if (capabilities.features.contains(JackfieldFeature.incoming)) {
   }
 }
 
-await calls.startOutgoingCall(
-  OutgoingCall(
-    callId: const CallId('outgoing-attempt-43'),
-    callee: const Caller(id: 'peer-8', displayName: 'Мария'),
-    media: CallMedia.audio,
-  ),
-);
+if (capabilities.features.contains(JackfieldFeature.outgoing)) {
+  final outcome = await calls.startOutgoingCall(
+    OutgoingCall(
+      callId: const CallId('outgoing-attempt-43'),
+      callee: const Caller(id: 'peer-8', displayName: 'Мария'),
+      media: CallMedia.audio,
+    ),
+  );
+  if (outcome case JackfieldFailure<CallSnapshot>(:final error)) {
+    print(error.code);
+  }
+}
 ```
 
 `startOutgoingCall` показывает системное состояние только там, где эта функция
