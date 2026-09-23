@@ -13,13 +13,15 @@ A new Flutter plugin project.
   s.license          = { :file => '../LICENSE' }
   s.author           = { 'Your Company' => 'email@example.com' }
   s.source           = { :path => '.' }
-  s.source_files = 'jackfield/Sources/jackfield/**/*'
+  s.source_files = 'Classes/**/*.swift'
   s.dependency 'Flutter'
   s.platform = :ios, '13.0'
 
   # Flutter.framework does not contain a i386 slice.
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES', 'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386' }
-  s.swift_version = '5.0'
+  s.swift_version = '5.9'
+  s.frameworks = 'CallKit', 'PushKit', 'Security'
+  s.libraries = 'sqlite3'
 
   # If your plugin requires a privacy manifest, for example if it uses any
   # required reason APIs, update the PrivacyInfo.xcprivacy file to describe your
