@@ -22,6 +22,7 @@ void main() {
 
     await coordinator.publish(event);
     await coordinator.publish(event);
+    expect(await journal.append(event), EventAppendResult.duplicate);
     expect(await journal.pendingFlutter(), [event]);
     expect(await journal.pendingHttp(), [event]);
 
@@ -34,7 +35,44 @@ void main() {
     expect(await journal.pendingFlutter(), isEmpty);
   });
 
-  test('ordering is isolated per call', () async {
+  test(
+    'ACKed event is not delivered to a new listener on duplicate publish',
+    () async {
+      final event = _ended('call-a', 'event-1', 1);
+      await coordinator.publish(event);
+      await journal.acknowledgeFlutter({event.eventId});
+      expect(await journal.pendingFlutter(), isEmpty);
+
+      final delivered = <JackfieldEvent>[];
+      final subscription = coordinator.events.listen(delivered.add);
+      await Future<void>.delayed(Duration.zero);
+
+      await coordinator.publish(event);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(delivered, isEmpty);
+      expect(await journal.pendingFlutter(), isEmpty);
+      await subscription.cancel();
+    },
+  );
+
+  test('live delivery rejects regressive sequence for the same call', () async {
+    final callA2 = _ended('call-a', 'event-a2', 2);
+    final callA1 = _ended('call-a', 'event-a1', 1);
+    final delivered = <JackfieldEvent>[];
+    final subscription = coordinator.events.listen(delivered.add);
+    await Future<void>.delayed(Duration.zero);
+
+    await coordinator.publish(callA2);
+    await coordinator.publish(callA1);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(delivered, [callA2]);
+    expect(await journal.pendingFlutter(), [callA2]);
+    await subscription.cancel();
+  });
+
+  test('stale sequence is rejected without blocking another call', () async {
     final callB1 = _ended('call-b', 'event-b1', 1);
     final callA2 = _ended('call-a', 'event-a2', 2);
     final callA1 = _ended('call-a', 'event-a1', 1);
@@ -43,8 +81,9 @@ void main() {
     await coordinator.publish(callA2);
     await coordinator.publish(callA1);
 
-    expect(await journal.pendingFlutter(), [callB1, callA1, callA2]);
-    expect(await journal.pendingHttp(), [callB1, callA1, callA2]);
+    expect(await journal.append(callA1), EventAppendResult.staleSequence);
+    expect(await journal.pendingFlutter(), [callB1, callA2]);
+    expect(await journal.pendingHttp(), [callB1, callA2]);
   });
 
   test('HTTP ACK never consumes the Flutter receipt', () async {
@@ -138,9 +177,9 @@ final class _GatedJournal implements EventJournal {
   void release() => _gate.complete();
 
   @override
-  Future<void> append(JackfieldEvent event) async {
+  Future<EventAppendResult> append(JackfieldEvent event) async {
     if (event.eventId == gatedId) await _gate.future;
-    await _journal.append(event);
+    return _journal.append(event);
   }
 
   @override

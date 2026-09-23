@@ -53,8 +53,8 @@ final class EventCoordinator {
     _callTails[event.callId] = tail;
     try {
       if (previous != null) await previous;
-      await journal.append(event);
-      _live.add(event);
+      final result = await journal.append(event);
+      if (result == EventAppendResult.appended) _live.add(event);
     } finally {
       completion.complete();
       if (identical(_callTails[event.callId], tail)) {

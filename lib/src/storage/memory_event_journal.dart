@@ -6,14 +6,19 @@ import 'event_journal.dart';
 final class MemoryEventJournal implements EventJournal {
   final Map<EventId, _Record> _records = {};
   final Map<CallId, int> _callOrder = {};
+  final Map<CallId, int> _lastSequenceByCall = {};
   bool _httpPausedForAuthentication = false;
 
   /// Whether a test adapter should suspend HTTP delivery attempts.
   bool get isHttpPausedForAuthentication => _httpPausedForAuthentication;
 
   @override
-  Future<void> append(JackfieldEvent event) async {
-    if (_records.containsKey(event.eventId)) return;
+  Future<EventAppendResult> append(JackfieldEvent event) async {
+    if (_records.containsKey(event.eventId)) return EventAppendResult.duplicate;
+    final lastSequence = _lastSequenceByCall[event.callId];
+    if (lastSequence != null && event.sequence <= lastSequence) {
+      return EventAppendResult.staleSequence;
+    }
     final callOrder = _callOrder.putIfAbsent(
       event.callId,
       () => _callOrder.length,
@@ -23,6 +28,8 @@ final class MemoryEventJournal implements EventJournal {
       callOrder: callOrder,
       insertionOrder: _records.length,
     );
+    _lastSequenceByCall[event.callId] = event.sequence;
+    return EventAppendResult.appended;
   }
 
   @override
