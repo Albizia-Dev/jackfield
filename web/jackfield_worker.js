@@ -161,28 +161,62 @@
     }
   }
 
-  async function terminalize(callId, reason, expectedActionId) {
-    const result = await transaction(['snapshots', 'inbox', 'outbox', 'meta', 'receipts'], 'readwrite', async tx => {
-      const snapshots = tx.objectStore('snapshots');
-      const current = await request(snapshots.get(callId));
-      if (!current) return null;
-      if (current.state === 'ended' || current.state === 'failed') return { snapshot: current };
-      if (expectedActionId && (current.state !== 'connecting' || current.actionId !== expectedActionId)) return { snapshot: current };
-      const event = { version: 1, type: 'ended', callId, eventId: scope.crypto.randomUUID(),
-        sequence: (current.sequence || 0) + 1, occurredAt: new Date().toISOString(), reason };
-      const snapshot = { ...current, state: reason === 'failed' ? 'failed' : 'ended', sequence: event.sequence };
-      snapshots.put(snapshot);
-      if (expectedActionId) {
-        const receipts = tx.objectStore('receipts');
-        const receipt = await request(receipts.get(expectedActionId));
-        if (receipt) receipts.put({ ...receipt, expired: true });
-      }
-      tx.objectStore('inbox').put({ id: event.eventId, event, acknowledged: false });
-      return { snapshot, event, admitted: await admitCallback(tx, event) };
+  async function markPresentationFailed(callId) {
+    await transaction(['snapshots'], 'readwrite', async tx => {
+      const store = tx.objectStore('snapshots');
+      const current = await request(store.get(callId));
+      if (current?.state === 'presenting') store.put({ ...current, state: 'presentationFailed' });
     });
-    if (!result) return null;
+  }
+
+  async function showCallNotification(callId, title, options) {
+    try { await scope.registration.showNotification(title, options); }
+    catch (error) {
+      await markPresentationFailed(callId);
+      throw error;
+    }
     try {
-      if (result.event) {
+      const state = await transaction(['snapshots'], 'readwrite', async tx => {
+        const store = tx.objectStore('snapshots');
+        const current = await request(store.get(callId));
+        if (current?.state === 'presenting') {
+          store.put({ ...current, state: 'ringing' });
+          return 'ringing';
+        }
+        return current?.state;
+      });
+      if (state === 'ringing') return true;
+      await closeCallNotifications(callId);
+      return false;
+    } catch (error) {
+      try { await closeCallNotifications(callId); }
+      finally { await markPresentationFailed(callId).catch(() => {}); }
+      throw error;
+    }
+  }
+
+  async function terminalize(callId, reason, expectedActionId) {
+    let result;
+    try {
+      result = await transaction(['snapshots', 'inbox', 'outbox', 'meta', 'receipts'], 'readwrite', async tx => {
+        const snapshots = tx.objectStore('snapshots');
+        const current = await request(snapshots.get(callId));
+        if (!current) return null;
+        if (current.state === 'ended' || current.state === 'failed') return { snapshot: current };
+        if (expectedActionId && (current.state !== 'connecting' || current.actionId !== expectedActionId)) return { snapshot: current };
+        const event = { version: 1, type: 'ended', callId, eventId: scope.crypto.randomUUID(),
+          sequence: (current.sequence || 0) + 1, occurredAt: new Date().toISOString(), reason };
+        const snapshot = { ...current, state: reason === 'failed' ? 'failed' : 'ended', sequence: event.sequence };
+        snapshots.put(snapshot);
+        if (expectedActionId) {
+          const receipts = tx.objectStore('receipts');
+          const receipt = await request(receipts.get(expectedActionId));
+          if (receipt) receipts.put({ ...receipt, expired: true });
+        }
+        tx.objectStore('inbox').put({ id: event.eventId, event, acknowledged: false });
+        return { snapshot, event, admitted: await admitCallback(tx, event) };
+      });
+      if (result?.event) {
         try { await publish(result.event); }
         catch (_) { await diagnostic('publishFailure', result.event.eventId); }
         if (result.admitted) await scheduleOutbox();
@@ -190,8 +224,8 @@
     } finally {
       await closeCallNotifications(callId);
     }
-    if (result.event) await safeDrain();
-    return result.snapshot;
+    if (result?.event) await safeDrain();
+    return result?.snapshot || null;
   }
 
   async function scheduleDeadlineRecovery() {
@@ -216,7 +250,6 @@
     },
       Math.max(0, nextAt - Date.now()));
     deadlineTimer?.unref?.();
-    try { await scope.registration.sync?.register('jackfield-deadline'); } catch (_) { /* local and future worker wakes still recover */ }
     try { await scope.registration.periodicSync?.register('jackfield-deadline', { minInterval: 900000 }); }
     catch (_) { /* periodic sync is optional */ }
   }
@@ -309,24 +342,11 @@
         return;
       }
       if (accepted !== 'accepted') return;
-      try {
-        await scope.registration.showNotification(payload.caller.displayName, {
-          body: 'Incoming call', tag: payload.callId, data: { callId: payload.callId, eventId: payload.eventId },
-          actions: [{ action: 'answer', title: 'Answer' }, { action: 'reject', title: 'Reject' }],
-        });
-        await transaction(['snapshots'], 'readwrite', async tx => {
-          const store = tx.objectStore('snapshots');
-          const current = await request(store.get(payload.callId));
-          if (current?.state === 'presenting') store.put({ ...current, state: 'ringing' });
-        });
-      } catch (error) {
-        await transaction(['snapshots'], 'readwrite', async tx => {
-          const store = tx.objectStore('snapshots');
-          const current = await request(store.get(payload.callId));
-          if (current?.state === 'presenting') store.put({ ...current, state: 'presentationFailed' });
-        });
-        throw error;
-      }
+      const shown = await showCallNotification(payload.callId, payload.caller.displayName, {
+        body: 'Incoming call', tag: payload.callId, data: { callId: payload.callId, eventId: payload.eventId },
+        actions: [{ action: 'answer', title: 'Answer' }, { action: 'reject', title: 'Reject' }],
+      });
+      if (!shown) return;
       await safeDrain();
     } finally { presentingCalls.delete(payload.callId); }
   }
@@ -514,21 +534,13 @@
             return true;
           });
           if (!created) return { status: 'failure', error: { code: 'invalidState' } };
+          let shown;
           try {
-            await scope.registration.showNotification(call.caller.displayName, { body: 'Incoming call', tag: call.callId, data: { callId: call.callId }, actions: [{ action: 'answer', title: 'Answer' }, { action: 'reject', title: 'Reject' }] });
-            await transaction(['snapshots'], 'readwrite', async tx => {
-              const store = tx.objectStore('snapshots');
-              const current = await request(store.get(call.callId));
-              if (current?.state === 'presenting') store.put({ ...current, state: 'ringing' });
-            });
-          } catch (_) {
-            await transaction(['snapshots'], 'readwrite', async tx => {
-              const store = tx.objectStore('snapshots');
-              const current = await request(store.get(call.callId));
-              if (current?.state === 'presenting') store.put({ ...current, state: 'presentationFailed' });
-            });
-            return { status: 'failure', error: { code: 'platformFailure' } };
-          }
+            shown = await showCallNotification(call.callId, call.caller.displayName,
+              { body: 'Incoming call', tag: call.callId, data: { callId: call.callId },
+                actions: [{ action: 'answer', title: 'Answer' }, { action: 'reject', title: 'Reject' }] });
+          } catch (_) { return { status: 'failure', error: { code: 'platformFailure' } }; }
+          if (!shown) return { status: 'failure', error: { code: 'invalidState' } };
           return { status: 'success', value: snapshot };
         } finally { presentingCalls.delete(call.callId); }
       }

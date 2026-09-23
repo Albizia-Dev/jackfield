@@ -84,6 +84,27 @@ async function updateRecord(name, storeName, id, update) {
   } finally { db.close(); }
 }
 
+function abortNextTransaction(h, predicate) {
+  const original = h.scope.indexedDB;
+  let armed = true;
+  h.scope.indexedDB = { open(...args) {
+    const req = original.open(...args);
+    req.addEventListener('success', () => {
+      const db = req.result;
+      const transaction = db.transaction.bind(db);
+      db.transaction = (names, mode) => {
+        const tx = transaction(names, mode);
+        if (armed && predicate(names, mode)) {
+          armed = false;
+          queueMicrotask(() => tx.abort());
+        }
+        return tx;
+      };
+    });
+    return req;
+  } };
+}
+
 test('push persists before notification and uses stable event identity', async () => {
   const { scope, listeners, notifications } = harness();
   scope.JackfieldWorker.install();
@@ -490,6 +511,85 @@ test('worker restart reconciles an interrupted presentation before retrying its 
   assert.equal((await records(first.scope.JackfieldDatabaseName, 'snapshots'))[0].state, 'presentationFailed');
   assert.equal((await restarted.scope.JackfieldWorker.command(message)).status, 'success');
   assert.equal((await records(first.scope.JackfieldDatabaseName, 'snapshots'))[0].state, 'ringing');
+});
+
+for (const source of ['reportIncoming', 'push']) {
+  test(`${source} closes a notification that appears after concurrent end`, async () => {
+    const h = harness();
+    h.scope.JackfieldWorker.install();
+    if (source === 'push') await bind(h);
+    const visible = [];
+    let releaseShow;
+    h.scope.registration.showNotification = (title, options) => new Promise(resolve => {
+      releaseShow = () => {
+        visible.push({ tag: options.tag, closed: false, close() { this.closed = true; } });
+        resolve();
+      };
+    });
+    h.scope.registration.getNotifications = async () => visible.filter(item => !item.closed);
+    const pendingShow = source === 'push' ? pushCall(h) : h.scope.JackfieldWorker.command({
+      version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' },
+    });
+    while (!releaseShow) await new Promise(resolve => setTimeout(resolve, 1));
+    const end = await h.scope.JackfieldWorker.command({ version: 1, command: 'end', callId: 'call-1', reason: 'remote' });
+    assert.equal(end.status, 'success');
+    releaseShow();
+    const result = await pendingShow;
+    if (source === 'reportIncoming') assert.notEqual(result.value?.state, 'ringing');
+    assert.equal((await records(h.scope.JackfieldDatabaseName, 'snapshots'))[0].state, 'ended');
+    assert.equal(visible.length, 1);
+    assert.equal(visible[0].closed, true);
+  });
+}
+
+test('end closes a visible notification even when its IndexedDB transaction aborts', async () => {
+  const h = harness();
+  h.scope.JackfieldWorker.install();
+  const visible = { tag: 'call-1', closed: false, close() { this.closed = true; } };
+  h.scope.registration.getNotifications = async () => [visible];
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  abortNextTransaction(h, (names, mode) => mode === 'readwrite' && names.includes('snapshots') && names.includes('inbox'));
+  await assert.rejects(h.scope.JackfieldWorker.command({ version: 1, command: 'end', callId: 'call-1', reason: 'remote' }));
+  assert.equal(visible.closed, true);
+  assert.equal((await records(h.scope.JackfieldDatabaseName, 'snapshots'))[0].state, 'ringing');
+});
+
+for (const source of ['reportIncoming', 'push']) {
+  test(`${source} closes visible UI when the post-show ringing write aborts`, async () => {
+    const h = harness();
+    h.scope.JackfieldWorker.install();
+    if (source === 'push') await bind(h);
+    const visible = { tag: 'call-1', closed: false, close() { this.closed = true; } };
+    h.scope.registration.getNotifications = async () => [visible];
+    h.scope.registration.showNotification = async () => {
+      abortNextTransaction(h, (names, mode) => mode === 'readwrite' && names.length === 1 && names[0] === 'snapshots');
+    };
+    if (source === 'push') await assert.rejects(pushCall(h));
+    else {
+      const outcome = await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming',
+        call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+      assert.equal(outcome.error.code, 'platformFailure');
+    }
+    assert.equal(visible.closed, true);
+    assert.equal((await records(h.scope.JackfieldDatabaseName, 'snapshots'))[0].state, 'presentationFailed');
+  });
+}
+
+test('deadline recovery does not self-register one-shot Background Sync', async () => {
+  const h = harness();
+  h.scope.JackfieldWorker.install();
+  const syncs = [];
+  const periodic = [];
+  h.scope.registration.sync = { register: async tag => syncs.push(tag) };
+  h.scope.registration.periodicSync = { register: async tag => periodic.push(tag) };
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
+  assert.equal(syncs.includes('jackfield-deadline'), false);
+  assert.equal(periodic.includes('jackfield-deadline'), true);
+  const receipt = (await records(h.scope.JackfieldDatabaseName, 'receipts'))[0];
+  await updateRecord(h.scope.JackfieldDatabaseName, 'receipts', receipt.id, current => ({ ...current, deadline: Date.now() - 1 }));
+  await dispatch(h.listeners, 'periodicsync', { tag: 'jackfield-deadline' });
+  assert.equal((await records(h.scope.JackfieldDatabaseName, 'snapshots'))[0].state, 'failed');
 });
 
 test('bridge refuses an unrelated worker registration', async () => {
