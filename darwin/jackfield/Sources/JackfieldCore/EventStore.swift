@@ -98,10 +98,13 @@ public actor EventStore {
       return
     }
     sqlite3_finalize(prior)
-    if !admissionCritical, let limit = try setting("http_limit").flatMap(Int.init), try pendingHTTPCount() >= limit {
-      throw JackfieldCoreError.storageFull
-    }
-    let httpState = try setting("http_enabled") == "0" ? "disabled" : "pending"
+    let enabled = try setting("http_enabled") != "0"
+    let limit = try setting("http_limit").flatMap(Int.init)
+    let atCapacity: Bool
+    if enabled, let limit { atCapacity = try pendingHTTPCount() >= limit }
+    else { atCapacity = false }
+    if atCapacity && !admissionCritical { throw JackfieldCoreError.storageFull }
+    let httpState = !enabled ? "disabled" : atCapacity ? "capacity_dropped" : "pending"
     let stmt = try statement("INSERT INTO events(event_id,call_id,sequence,json,http_state) VALUES(?,?,?,?,?)")
     defer { sqlite3_finalize(stmt) }
     bind(event.eventId, 1, to: stmt); bind(event.callId, 2, to: stmt)
@@ -246,6 +249,7 @@ public actor EventStore {
   }
   public func pendingHTTPCount() throws -> Int { try count("http_state='pending'") }
   public func pendingFlutterCount() throws -> Int { try count("flutter_ack=0") }
+  public func httpCapacityDroppedCount() throws -> Int { try count("http_state='capacity_dropped'") }
   private func count(_ clause: String) throws -> Int {
     let stmt = try statement("SELECT COUNT(*) FROM events WHERE \(clause)"); defer { sqlite3_finalize(stmt) }
     guard sqlite3_step(stmt) == SQLITE_ROW else { throw JackfieldCoreError.platformFailure }

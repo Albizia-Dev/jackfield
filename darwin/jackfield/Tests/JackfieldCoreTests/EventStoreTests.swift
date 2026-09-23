@@ -199,8 +199,44 @@ final class EventStoreTests: XCTestCase {
     let reopened = try EventStore(path: path)
     let snapshot = try await reopened.snapshot(callId: "call-1")
     let flutter = try await reopened.pendingFlutter()
+    let http = try await reopened.pendingHTTP()
+    let ready = try await reopened.readyHTTP(at: Date(timeIntervalSince1970: 200))
+    let pendingCount = try await reopened.pendingHTTPCount()
+    let droppedCount = try await reopened.httpCapacityDroppedCount()
     XCTAssertEqual(snapshot?.state, "ended")
     XCTAssertEqual(ended.eventId, "terminal")
     XCTAssertEqual(flutter.map(\.eventId), ["terminal", "occupying"])
+    XCTAssertEqual(http.map(\.eventId), ["occupying"])
+    XCTAssertEqual(ready.map(\.eventId), ["occupying"])
+    XCTAssertEqual(pendingCount, 1)
+    XCTAssertEqual(droppedCount, 1)
+    try await reopened.acknowledgeHTTP(["occupying"])
+    let readyAfterAck = try await reopened.readyHTTP(at: Date(timeIntervalSince1970: 201))
+    let nextWake = try await reopened.nextHTTPWake()
+    XCTAssertTrue(readyAfterAck.isEmpty)
+    XCTAssertNil(nextWake)
+  }
+
+  func testTerminalHTTPAdmissionUsesAvailableCapacityAndRespectsDisabledCallbacks() async throws {
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let store = try EventStore(path: path)
+    try await store.configureHTTP(limit: 1)
+    try await store.save(snapshot: CallRecord(callId: "call-1", state: "ringing", media: "audio"))
+    _ = try await store.saveEnded(callId: "call-1", eventId: "queued", reason: "remote",
+                                  at: Date(timeIntervalSince1970: 100))
+    let pendingBeforeDisable = try await store.pendingHTTP()
+    XCTAssertEqual(pendingBeforeDisable.map(\.eventId), ["queued"])
+    try await store.disableHTTP()
+    try await store.save(snapshot: CallRecord(callId: "call-2", state: "ringing", media: "audio"))
+    _ = try await store.saveEnded(callId: "call-2", eventId: "disabled", reason: "local",
+                                  at: Date(timeIntervalSince1970: 101))
+    let reopened = try EventStore(path: path)
+    let flutter = try await reopened.pendingFlutter()
+    let http = try await reopened.pendingHTTP()
+    let dropped = try await reopened.httpCapacityDroppedCount()
+    XCTAssertEqual(flutter.map(\.eventId), ["queued", "disabled"])
+    XCTAssertTrue(http.isEmpty)
+    XCTAssertEqual(dropped, 0)
   }
 }

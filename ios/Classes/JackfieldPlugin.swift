@@ -157,10 +157,12 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
     return ["version": 1, "platform": "ios", "mechanism": "nativeCallUi", "features": ["incoming", "outgoing", "answer", "end", "durableEvents", "httpCallbacks", "pushTokens"]]
   }
   private func diagnostics(_ store: EventStore) async throws -> [String: Any] {
-    ["version": 1, "mechanism": "nativeCallUi", "permissions": ["voipPush": "unknown"],
+    let dropped = try await store.httpCapacityDroppedCount()
+    let diagnosticError = dropped > 0 ? "storageFull" : lastError
+    return ["version": 1, "mechanism": "nativeCallUi", "permissions": ["voipPush": "unknown"],
      "pendingFlutterEvents": try await store.pendingFlutterCount(), "pendingHttpEvents": try await store.pendingHTTPCount(),
      "httpPausedForAuthentication": try await store.httpPausedForAuthentication(),
-     "lastError": lastError.map { ["code": $0] } ?? NSNull()] as [String: Any]
+     "lastError": diagnosticError.map { ["code": $0] } ?? NSNull()] as [String: Any]
   }
   private static func success(_ value: Any) -> [String: Any] { ["version": 1, "status": "success", "value": value] }
   private static func failure(_ code: String) -> [String: Any] { ["version": 1, "status": "failure", "error": ["code": code]] }
