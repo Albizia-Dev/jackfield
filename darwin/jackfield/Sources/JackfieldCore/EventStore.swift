@@ -1,8 +1,19 @@
 import Foundation
 import SQLite3
 
+public struct HTTPDispatchTicket: Sendable {
+  public let event: WireEnvelope
+  public let configuration: HTTPConfiguration
+  public let credentialFingerprint: String
+  fileprivate let generation: UInt64
+  fileprivate let storeIdentity: UUID
+}
+
 public actor EventStore {
+  public nonisolated let dispatchCoordination = HTTPDispatchCoordination()
   private var db: OpaquePointer?
+  private let storeIdentity = UUID()
+  private var configurationGeneration: UInt64 = 0
   private let encoder = JSONEncoder()
   private let decoder = JSONDecoder()
 
@@ -261,18 +272,47 @@ public actor EventStore {
           let text = try setting("http_limit"), let limit = Int(text) else { return false }
     return try pendingHTTPCount() >= limit
   }
-  public func withPendingHTTPDispatch(eventId: String, _ submit: () throws -> Void) throws -> Bool {
+  private func readyHTTPEvent(id: String, at date: Date) throws -> WireEnvelope? {
+    let stmt = try statement("SELECT e.json FROM events e WHERE e.event_id=? AND e.http_state='pending' AND e.next_at<=? AND NOT EXISTS (SELECT 1 FROM events prior WHERE prior.call_id=e.call_id AND prior.sequence<e.sequence AND prior.http_state='pending')")
+    bind(id, 1, to: stmt)
+    sqlite3_bind_double(stmt, 2, date.timeIntervalSince1970)
+    let status = sqlite3_step(stmt)
+    if status == SQLITE_DONE { sqlite3_finalize(stmt); return nil }
+    guard status == SQLITE_ROW, let bytes = sqlite3_column_blob(stmt, 0) else {
+      sqlite3_finalize(stmt)
+      throw JackfieldCoreError.platformFailure
+    }
+    let data = Data(bytes: bytes, count: Int(sqlite3_column_bytes(stmt, 0)))
+    sqlite3_finalize(stmt)
+    return try decoder.decode(WireEnvelope.self, from: data)
+  }
+  public func prepareHTTPDispatch(eventId: String, at date: Date) throws -> HTTPDispatchTicket? {
     try transaction {
-      guard try setting("http_enabled") == "1", try !httpPausedForAuthentication() else { return false }
-      let stmt = try statement("SELECT 1 FROM events e WHERE e.event_id=? AND e.http_state='pending' AND e.next_at<=? AND NOT EXISTS (SELECT 1 FROM events prior WHERE prior.call_id=e.call_id AND prior.sequence<e.sequence AND prior.http_state='pending')")
-      defer { sqlite3_finalize(stmt) }
-      bind(eventId, 1, to: stmt)
-      sqlite3_bind_double(stmt, 2, Date().timeIntervalSince1970)
-      let status = sqlite3_step(stmt)
-      if status == SQLITE_DONE { return false }
-      guard status == SQLITE_ROW else { throw JackfieldCoreError.platformFailure }
-      try submit()
-      return true
+      guard let delivery = try httpDeliveryConfiguration(), try !httpPausedForAuthentication(),
+            let event = try readyHTTPEvent(id: eventId, at: date) else { return nil }
+      if date >= event.occurredAt.addingTimeInterval(delivery.configuration.ttl) {
+        try run("UPDATE events SET http_state='terminal' WHERE event_id=? AND http_state='pending'", [eventId])
+        return nil
+      }
+      return HTTPDispatchTicket(event: event, configuration: delivery.configuration,
+                                credentialFingerprint: delivery.fingerprint,
+                                generation: configurationGeneration, storeIdentity: storeIdentity)
+    }
+  }
+  public func confirmHTTPDispatch(_ ticket: HTTPDispatchTicket, at date: Date) throws -> Bool {
+    try transaction {
+      guard ticket.storeIdentity == storeIdentity,
+            let delivery = try httpDeliveryConfiguration(),
+            let event = try readyHTTPEvent(id: ticket.event.eventId, at: date) else { return false }
+      if date >= event.occurredAt.addingTimeInterval(delivery.configuration.ttl) {
+        try run("UPDATE events SET http_state='terminal' WHERE event_id=? AND http_state='pending'", [event.eventId])
+        return false
+      }
+      let paused = try httpPausedForAuthentication()
+      return ticket.generation == configurationGeneration &&
+             delivery.configuration == ticket.configuration &&
+             delivery.fingerprint == ticket.credentialFingerprint &&
+             !paused && event == ticket.event
     }
   }
   private func count(_ clause: String) throws -> Int {
@@ -286,12 +326,13 @@ public actor EventStore {
     guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
     return String(cString: sqlite3_column_text(stmt, 0))
   }
-  public func configureHTTP(limit: Int, credentialFingerprint: String? = nil, endpoint: String? = nil, ttl: TimeInterval? = nil) throws {
+  public func configureHTTP(limit: Int, credentialFingerprint: String? = nil, endpoint: String? = nil, ttl: TimeInterval? = nil) async throws {
     guard limit > 0 else { throw JackfieldCoreError.protocolFailure }
     if let endpoint, let ttl {
       guard endpoint.hasPrefix("https://"), ttl > 0 else { throw JackfieldCoreError.protocolFailure }
     } else if endpoint != nil || ttl != nil { throw JackfieldCoreError.protocolFailure }
-    try transaction {
+    await dispatchCoordination.acquire()
+    do { try transaction {
       let surplus = try pendingHTTPCount() - limit
       if surplus > 0 {
         let stmt = try statement("UPDATE events SET http_state='capacity_dropped' WHERE event_id IN (SELECT event_id FROM events WHERE http_state='pending' ORDER BY rowid DESC LIMIT ?)")
@@ -308,14 +349,19 @@ public actor EventStore {
       if let credentialFingerprint, !credentialFingerprint.isEmpty {
         try run("INSERT OR REPLACE INTO settings(key,value) VALUES('credential_fingerprint',?)", [credentialFingerprint])
       }
-    }
+    }; configurationGeneration &+= 1 }
+    catch { await dispatchCoordination.release(); throw error }
+    await dispatchCoordination.release()
   }
-  public func disableHTTP() throws {
-    try transaction {
+  public func disableHTTP() async throws {
+    await dispatchCoordination.acquire()
+    do { try transaction {
       try run("INSERT OR REPLACE INTO settings(key,value) VALUES('http_enabled','0')", [])
       try exec("UPDATE events SET http_state='disabled' WHERE http_state='pending'")
       try exec("DELETE FROM settings WHERE key IN ('http_endpoint','http_ttl','credential_fingerprint','rejected_fingerprint','auth_pause')")
-    }
+    }; configurationGeneration &+= 1 }
+    catch { await dispatchCoordination.release(); throw error }
+    await dispatchCoordination.release()
   }
   public func httpConfiguration() throws -> HTTPConfiguration? {
     guard try setting("http_enabled") == "1",

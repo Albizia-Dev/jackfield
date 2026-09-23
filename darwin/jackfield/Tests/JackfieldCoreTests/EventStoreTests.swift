@@ -333,7 +333,7 @@ final class EventStoreTests: XCTestCase {
     let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
     defer { try? FileManager.default.removeItem(atPath: path) }
     let store = try EventStore(path: path)
-    try await store.configureHTTP(limit: 2)
+    try await store.configureHTTP(limit: 2, credentialFingerprint: "same", endpoint: "https://example.test/hook", ttl: 300)
     for index in 1...2 {
       let event = try WireEnvelope.ended(callId: "call-\(index)", eventId: "event-\(index)", sequence: 0,
                                          occurredAt: Date(timeIntervalSince1970: Double(100 + index)), reason: "remote")
@@ -344,11 +344,15 @@ final class EventStoreTests: XCTestCase {
     let inventoryReached = expectation(description: "dispatcher is waiting for URLSession task inventory")
     let gate = HTTPInventoryGate()
     let submissions = HTTPSubmissionRecorder()
+    let preparedStale = try await store.prepareHTTPDispatch(eventId: cached[1].eventId,
+                                                             at: Date(timeIntervalSince1970: 200))
+    let staleTicket = try XCTUnwrap(preparedStale)
     let dispatch = Task {
       inventoryReached.fulfill()
       await gate.wait()
-      return try await store.withPendingHTTPDispatch(eventId: cached[1].eventId) {
-        submissions.record(cached[1].eventId)
+      return try await store.dispatchCoordination.enqueueIfCurrent(store: store, ticket: staleTicket,
+                                                                    at: Date(timeIntervalSince1970: 200)) {
+        submissions.record(staleTicket.event.eventId)
       }
     }
     await fulfillment(of: [inventoryReached], timeout: 2)
@@ -357,8 +361,12 @@ final class EventStoreTests: XCTestCase {
     let submitted = try await dispatch.value
     XCTAssertFalse(submitted)
     XCTAssertTrue(submissions.ids.isEmpty)
-    let retainedSubmitted = try await store.withPendingHTTPDispatch(eventId: "event-1") {
-      submissions.record("event-1")
+    let preparedRetained = try await store.prepareHTTPDispatch(eventId: "event-1",
+                                                                at: Date(timeIntervalSince1970: 200))
+    let retainedTicket = try XCTUnwrap(preparedRetained)
+    let retainedSubmitted = try await store.dispatchCoordination.enqueueIfCurrent(store: store, ticket: retainedTicket,
+                                                                                  at: Date(timeIntervalSince1970: 200)) {
+      submissions.record(retainedTicket.event.eventId)
     }
     XCTAssertTrue(retainedSubmitted)
     XCTAssertEqual(submissions.ids, ["event-1"])
@@ -385,22 +393,202 @@ final class EventStoreTests: XCTestCase {
   }
 
   func testFailedDispatchPreparationKeepsHTTPEventPending() async throws {
-    enum PreparationFailure: Error { case unavailable }
     let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
     defer { try? FileManager.default.removeItem(atPath: path) }
     let store = try EventStore(path: path)
-    try await store.configureHTTP(limit: 1)
+    try await store.configureHTTP(limit: 1, credentialFingerprint: "same", endpoint: "https://example.test/hook", ttl: 300)
     let event = try WireEnvelope.ended(callId: "call-1", eventId: "event-1", sequence: 0,
                                        occurredAt: Date(timeIntervalSince1970: 100), reason: "remote")
     try await store.append(event)
-    do {
-      _ = try await store.withPendingHTTPDispatch(eventId: "event-1") {
-        throw PreparationFailure.unavailable
-      }
-      XCTFail("Failed upload preparation must propagate")
-    } catch PreparationFailure.unavailable { }
+    let prepared = try await store.prepareHTTPDispatch(eventId: "event-1",
+                                                       at: Date(timeIntervalSince1970: 150))
+    let ticket = try XCTUnwrap(prepared)
+    // Simulate file or URLSession preparation failing before confirmation.
+    XCTAssertEqual(ticket.event.eventId, "event-1")
     let pending = try await store.pendingHTTP()
     XCTAssertEqual(pending.map(\.eventId), ["event-1"])
+    let retry = try await store.prepareHTTPDispatch(eventId: "event-1", at: Date(timeIntervalSince1970: 151))
+    XCTAssertNotNil(retry)
+  }
+
+  func testShorterTTLConfiguredDuringInventoryWaitExpiresCachedCandidate() async throws {
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let store = try EventStore(path: path)
+    try await store.configureHTTP(limit: 1, credentialFingerprint: "same", endpoint: "https://example.test/hook", ttl: 300)
+    let event = try WireEnvelope.ended(callId: "call-1", eventId: "event-1", sequence: 0,
+                                       occurredAt: Date(timeIntervalSince1970: 100), reason: "remote")
+    try await store.append(event)
+    let cached = try await store.readyHTTP(at: Date(timeIntervalSince1970: 150))
+    XCTAssertEqual(cached.map(\.eventId), ["event-1"])
+    let inventoryReached = expectation(description: "dispatcher is waiting for URLSession task inventory")
+    let gate = HTTPInventoryGate()
+    let submissions = HTTPSubmissionRecorder()
+    let preparedStale = try await store.prepareHTTPDispatch(eventId: cached[0].eventId,
+                                                             at: Date(timeIntervalSince1970: 150))
+    let staleTicket = try XCTUnwrap(preparedStale)
+    let dispatch = Task {
+      inventoryReached.fulfill()
+      await gate.wait()
+      return try await store.dispatchCoordination.enqueueIfCurrent(store: store, ticket: staleTicket,
+                                                                    at: Date(timeIntervalSince1970: 150)) {
+        submissions.record(staleTicket.event.eventId)
+      }
+    }
+    await fulfillment(of: [inventoryReached], timeout: 2)
+    try await store.configureHTTP(limit: 1, credentialFingerprint: "same", endpoint: "https://example.test/hook", ttl: 40)
+    await gate.open()
+    let submitted = try await dispatch.value
+    let pending = try await store.pendingHTTP()
+    let flutter = try await store.pendingFlutter()
+    XCTAssertFalse(submitted)
+    XCTAssertTrue(submissions.ids.isEmpty)
+    XCTAssertTrue(pending.isEmpty)
+    XCTAssertEqual(flutter.map(\.eventId), ["event-1"])
+  }
+
+  func testRotatedEndpointAndCredentialDuringInventoryWaitRejectsStaleRequest() async throws {
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let store = try EventStore(path: path)
+    try await store.configureHTTP(limit: 1, credentialFingerprint: "old", endpoint: "https://old.example.test/hook", ttl: 300)
+    let event = try WireEnvelope.ended(callId: "call-1", eventId: "event-1", sequence: 0,
+                                       occurredAt: Date(timeIntervalSince1970: 100), reason: "remote")
+    try await store.append(event)
+    let cached = try await store.readyHTTP(at: Date(timeIntervalSince1970: 150))
+    XCTAssertEqual(cached.map(\.eventId), ["event-1"])
+    let inventoryReached = expectation(description: "dispatcher is waiting for URLSession task inventory")
+    let gate = HTTPInventoryGate()
+    let submissions = HTTPSubmissionRecorder()
+    let preparedStale = try await store.prepareHTTPDispatch(eventId: cached[0].eventId,
+                                                             at: Date(timeIntervalSince1970: 150))
+    let staleTicket = try XCTUnwrap(preparedStale)
+    let staleDispatch = Task {
+      inventoryReached.fulfill()
+      await gate.wait()
+      return try await store.dispatchCoordination.enqueueIfCurrent(store: store, ticket: staleTicket,
+                                                                    at: Date(timeIntervalSince1970: 150)) {
+        submissions.record("\(staleTicket.event.eventId)|\(staleTicket.configuration.endpoint)")
+      }
+    }
+    await fulfillment(of: [inventoryReached], timeout: 2)
+    try await store.configureHTTP(limit: 1, credentialFingerprint: "new", endpoint: "https://new.example.test/hook", ttl: 300)
+    await gate.open()
+    let staleSubmitted = try await staleDispatch.value
+    XCTAssertFalse(staleSubmitted)
+    XCTAssertTrue(submissions.ids.isEmpty)
+    let preparedCurrent = try await store.prepareHTTPDispatch(eventId: "event-1",
+                                                               at: Date(timeIntervalSince1970: 150))
+    let currentTicket = try XCTUnwrap(preparedCurrent)
+    let currentDispatch = try await store.dispatchCoordination.enqueueIfCurrent(store: store, ticket: currentTicket,
+                                                                                at: Date(timeIntervalSince1970: 150)) {
+      submissions.record("\(currentTicket.event.eventId)|\(currentTicket.configuration.endpoint)")
+    }
+    XCTAssertTrue(currentDispatch)
+    XCTAssertEqual(currentTicket.configuration.endpoint, "https://new.example.test/hook")
+    XCTAssertEqual(submissions.ids, ["event-1|https://new.example.test/hook"])
+  }
+
+  func testStalledTaskCreationDoesNotBlockCallEventStorage() async throws {
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let store = try EventStore(path: path)
+    try await store.configureHTTP(limit: 2, credentialFingerprint: "same", endpoint: "https://example.test/hook", ttl: 300)
+    let first = try WireEnvelope.ended(callId: "call-1", eventId: "event-1", sequence: 0,
+                                       occurredAt: Date(timeIntervalSince1970: 100), reason: "remote")
+    try await store.append(first)
+    let prepared = try await store.prepareHTTPDispatch(eventId: "event-1", at: Date(timeIntervalSince1970: 150))
+    let ticket = try XCTUnwrap(prepared)
+    let creationReached = expectation(description: "URLSession task creation stalled")
+    let writeCompleted = expectation(description: "CallKit event persists while task creation is stalled")
+    let gate = HTTPInventoryGate()
+    let dispatch = Task {
+      creationReached.fulfill()
+      await gate.wait()
+      return try await store.confirmHTTPDispatch(ticket, at: Date(timeIntervalSince1970: 150))
+    }
+    await fulfillment(of: [creationReached], timeout: 2)
+    let writer = Task {
+      let second = try WireEnvelope.ended(callId: "call-2", eventId: "event-2", sequence: 0,
+                                          occurredAt: Date(timeIntervalSince1970: 101), reason: "remote")
+      try await store.append(second)
+      writeCompleted.fulfill()
+    }
+    await fulfillment(of: [writeCompleted], timeout: 2)
+    await gate.open()
+    try await writer.value
+    let permitted = try await dispatch.value
+    XCTAssertTrue(permitted)
+    let flutter = try await store.pendingFlutter()
+    XCTAssertEqual(flutter.map(\.eventId), ["event-1", "event-2"])
+  }
+
+  func testConfigurationWaitsForResumeCriticalSectionButEventWritesDoNot() async throws {
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let store = try EventStore(path: path)
+    try await store.configureHTTP(limit: 2, credentialFingerprint: "old",
+                                  endpoint: "https://old.example.test/hook", ttl: 300)
+    let first = try WireEnvelope.ended(callId: "call-1", eventId: "event-1", sequence: 0,
+                                       occurredAt: Date(timeIntervalSince1970: 100), reason: "remote")
+    try await store.append(first)
+    let prepared = try await store.prepareHTTPDispatch(eventId: "event-1", at: Date(timeIntervalSince1970: 150))
+    let ticket = try XCTUnwrap(prepared)
+    let enqueueEntered = expectation(description: "synchronous URLSession resume section entered")
+    let resumeGate = DispatchSemaphore(value: 0)
+    let dispatch = Task {
+      try await store.dispatchCoordination.enqueueIfCurrent(store: store, ticket: ticket,
+                                                            at: Date(timeIntervalSince1970: 150)) {
+        enqueueEntered.fulfill()
+        resumeGate.wait()
+      }
+    }
+    await fulfillment(of: [enqueueEntered], timeout: 2)
+    let configuring = expectation(description: "configuration request began")
+    let rotation = Task {
+      configuring.fulfill()
+      try await store.configureHTTP(limit: 2, credentialFingerprint: "new",
+                                    endpoint: "https://new.example.test/hook", ttl: 300)
+    }
+    await fulfillment(of: [configuring], timeout: 2)
+    let second = try WireEnvelope.ended(callId: "call-2", eventId: "event-2", sequence: 0,
+                                        occurredAt: Date(timeIntervalSince1970: 101), reason: "remote")
+    try await store.append(second)
+    let before = try await store.httpConfiguration()
+    XCTAssertEqual(before?.endpoint, "https://old.example.test/hook")
+    resumeGate.signal()
+    let submitted = try await dispatch.value
+    XCTAssertTrue(submitted)
+    try await rotation.value
+    let after = try await store.httpConfiguration()
+    XCTAssertEqual(after?.endpoint, "https://new.example.test/hook")
+    let flutter = try await store.pendingFlutter()
+    XCTAssertEqual(flutter.map(\.eventId), ["event-1", "event-2"])
+  }
+
+  func testDisableAfterPreparationPreventsResumeAndPreservesFlutterEvent() async throws {
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let store = try EventStore(path: path)
+    try await store.configureHTTP(limit: 1, credentialFingerprint: "same",
+                                  endpoint: "https://example.test/hook", ttl: 300)
+    let event = try WireEnvelope.ended(callId: "call-1", eventId: "event-1", sequence: 0,
+                                       occurredAt: Date(timeIntervalSince1970: 100), reason: "remote")
+    try await store.append(event)
+    let prepared = try await store.prepareHTTPDispatch(eventId: "event-1", at: Date(timeIntervalSince1970: 150))
+    let ticket = try XCTUnwrap(prepared)
+    try await store.disableHTTP()
+    let submissions = HTTPSubmissionRecorder()
+    let permitted = try await store.dispatchCoordination.enqueueIfCurrent(store: store, ticket: ticket,
+                                                                          at: Date(timeIntervalSince1970: 150)) {
+      submissions.record(ticket.event.eventId)
+    }
+    XCTAssertFalse(permitted)
+    XCTAssertTrue(submissions.ids.isEmpty)
+    let pending = try await store.pendingHTTP()
+    let flutter = try await store.pendingFlutter()
+    XCTAssertTrue(pending.isEmpty)
+    XCTAssertEqual(flutter.map(\.eventId), ["event-1"])
   }
 }
 
@@ -420,7 +608,7 @@ private actor HTTPInventoryGate {
   }
 }
 
-private final class HTTPSubmissionRecorder {
+private final class HTTPSubmissionRecorder: @unchecked Sendable {
   private let lock = NSLock()
   private var submitted: [String] = []
 

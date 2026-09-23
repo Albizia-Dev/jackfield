@@ -138,6 +138,7 @@ private enum JackfieldCredentialStore {
 private struct JackfieldTaskMetadata: Codable {
   let eventId: String
   let credentialFingerprint: String
+  let attemptId: UUID?
 
   var description: String? { try? JSONEncoder().encode(self).base64EncodedString() }
   init?(description: String?) {
@@ -145,8 +146,8 @@ private struct JackfieldTaskMetadata: Codable {
           let value = try? JSONDecoder().decode(Self.self, from: data) else { return nil }
     self = value
   }
-  init(eventId: String, credentialFingerprint: String) {
-    self.eventId = eventId; self.credentialFingerprint = credentialFingerprint
+  init(eventId: String, credentialFingerprint: String, attemptId: UUID? = nil) {
+    self.eventId = eventId; self.credentialFingerprint = credentialFingerprint; self.attemptId = attemptId
   }
   static func from(_ task: URLSessionTask) -> Self? {
     if let persisted = Self(description: task.taskDescription) { return persisted }
@@ -163,6 +164,8 @@ private struct JackfieldTaskMetadata: Codable {
 @available(iOS 13.0, *)
 private final class JackfieldHTTPDispatcher: NSObject, URLSessionTaskDelegate {
   private let store: EventStore
+  // Serializes only dispatcher scans; EventStore/configuration never acquires this gate.
+  private let scanGate = HTTPDispatchCoordination()
   private lazy var session: URLSession = {
     let config = URLSessionConfiguration.background(withIdentifier: JackfieldBackgroundRuntime.sessionIdentifier)
     config.isDiscretionary = false
@@ -170,6 +173,8 @@ private final class JackfieldHTTPDispatcher: NSObject, URLSessionTaskDelegate {
     return URLSession(configuration: config, delegate: self, delegateQueue: nil)
   }()
   private let eventQueue = DispatchQueue(label: "dev.albizia.jackfield.urlsession-events")
+  private let ignoredTaskLock = NSLock()
+  private var ignoredTaskIdentifiers: Set<Int> = []
   private var pendingProcessing = 0
   private var didFinishEvents = false
   private var backgroundCompletion: (() -> Void)?
@@ -185,44 +190,75 @@ private final class JackfieldHTTPDispatcher: NSObject, URLSessionTaskDelegate {
   }
 
   func sendReady() async {
+    await scanGate.acquire()
+    await sendReadySerial()
+    await scanGate.release()
+  }
+
+  private func sendReadySerial() async {
     try? await store.expireHTTP(at: Date())
-    guard let token = JackfieldCredentialStore.read(),
-          let config = try? await store.httpConfiguration(),
-          let endpoint = URL(string: config.endpoint),
-          let ready = try? await store.readyHTTP(at: Date()) else { return }
-    let fingerprint = JackfieldBackgroundRuntime.fingerprint(endpoint: endpoint, token: token)
+    guard let ready = try? await store.readyHTTP(at: Date()) else { return }
     let active = await withCheckedContinuation { (continuation: CheckedContinuation<Set<String>, Never>) in
       session.getAllTasks { tasks in
-        let ids = tasks.compactMap { JackfieldTaskMetadata.from($0)?.eventId }
+        let ids = tasks.compactMap { task -> String? in
+          if task.state == .suspended {
+            // A crash between uploadTask and resume leaves an unsent task in the background session.
+            self.ignoreCompletion(for: task)
+            task.cancel()
+            return nil
+          }
+          return JackfieldTaskMetadata.from(task)?.eventId
+        }
         continuation.resume(returning: Set(ids))
       }
     }
     for event in ready {
       if active.contains(event.eventId) { continue }
-      if Date().timeIntervalSince(event.occurredAt) >= config.ttl {
-        try? await store.markHTTPTerminal(event.eventId)
-        continue
-      }
-      guard var request = try? event.callbackRequest(to: endpoint, token: token),
+      guard let ticket = try? await store.prepareHTTPDispatch(eventId: event.eventId, at: Date()),
+            let token = JackfieldCredentialStore.read(),
+            let endpoint = URL(string: ticket.configuration.endpoint),
+            JackfieldBackgroundRuntime.fingerprint(endpoint: endpoint, token: token) == ticket.credentialFingerprint,
+            var request = try? ticket.event.callbackRequest(to: endpoint, token: token),
             let body = request.httpBody else { continue }
-      let file = Self.bodyFile(for: event.eventId)
+      let attemptId = UUID()
+      let file = Self.bodyFile(for: ticket.event.eventId, attemptId: attemptId)
+      do { try body.write(to: file, options: .atomic) } catch { continue }
       request.httpBody = nil
-      _ = try? await store.withPendingHTTPDispatch(eventId: event.eventId) {
-        try body.write(to: file, options: .atomic)
-        let task = session.uploadTask(with: request, fromFile: file)
-        task.taskDescription = JackfieldTaskMetadata(eventId: event.eventId, credentialFingerprint: fingerprint).description
+      let task = session.uploadTask(with: request, fromFile: file)
+      task.taskDescription = JackfieldTaskMetadata(eventId: ticket.event.eventId,
+                                                    credentialFingerprint: ticket.credentialFingerprint,
+                                                    attemptId: attemptId).description
+      let coordination = store.dispatchCoordination
+      let permitted = (try? await coordination.enqueueIfCurrent(store: store, ticket: ticket, at: Date()) {
+        // Only synchronous enqueue runs under coordination; all file and task work ran outside it.
         task.resume()
+      }) ?? false
+      if !permitted {
+        ignoreCompletion(for: task)
+        task.cancel()
+        try? FileManager.default.removeItem(at: file)
       }
     }
   }
 
-  private static func bodyFile(for eventId: String) -> URL {
+  private static func bodyFile(for eventId: String, attemptId: UUID? = nil) -> URL {
     let digest = SHA256.hash(data: Data(eventId.utf8)).map { String(format: "%02x", $0) }.joined()
     let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
       .appendingPathComponent("jackfield/uploads", isDirectory: true)
     try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
                                              attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
-    return folder.appendingPathComponent("jackfield-\(digest).json")
+    let suffix = attemptId.map { "-\($0.uuidString)" } ?? ""
+    return folder.appendingPathComponent("jackfield-\(digest)\(suffix).json")
+  }
+
+  private func ignoreCompletion(for task: URLSessionTask) {
+    ignoredTaskLock.lock(); defer { ignoredTaskLock.unlock() }
+    ignoredTaskIdentifiers.insert(task.taskIdentifier)
+  }
+
+  private func takeIgnoredCompletion(for task: URLSessionTask) -> Bool {
+    ignoredTaskLock.lock(); defer { ignoredTaskLock.unlock() }
+    return ignoredTaskIdentifiers.remove(task.taskIdentifier) != nil
   }
 
   func urlSession(_ session: URLSession, task: URLSessionTask,
@@ -232,6 +268,12 @@ private final class JackfieldHTTPDispatcher: NSObject, URLSessionTaskDelegate {
   }
 
   func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+    if takeIgnoredCompletion(for: task) {
+      if let metadata = JackfieldTaskMetadata.from(task) {
+        try? FileManager.default.removeItem(at: Self.bodyFile(for: metadata.eventId, attemptId: metadata.attemptId))
+      }
+      return
+    }
     guard let metadata = JackfieldTaskMetadata.from(task) else { return }
     eventQueue.async { self.pendingProcessing += 1 }
     Task {
@@ -240,7 +282,7 @@ private final class JackfieldHTTPDispatcher: NSObject, URLSessionTaskDelegate {
       try? await CallbackQueue(store: store).recordResponse(eventId: metadata.eventId,
                  status: error == nil ? status : 503, credentialFingerprint: metadata.credentialFingerprint,
                  at: Date(), retryAfter: retryAfter)
-      try? FileManager.default.removeItem(at: Self.bodyFile(for: metadata.eventId))
+      try? FileManager.default.removeItem(at: Self.bodyFile(for: metadata.eventId, attemptId: metadata.attemptId))
       await JackfieldBackgroundRuntime.shared.sendReady()
       eventQueue.async {
         self.pendingProcessing -= 1
