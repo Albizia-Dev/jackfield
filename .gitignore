@@ -1,2 +1,12 @@
 .worktrees/
 .superpowers/
+.dart_tool/
+.idea/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+*.iml
+pubspec.lock
