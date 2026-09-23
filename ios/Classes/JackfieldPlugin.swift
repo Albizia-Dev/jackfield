@@ -1,7 +1,5 @@
 import Flutter
 import Foundation
-import CryptoKit
-import Security
 import UIKit
 
 #if canImport(JackfieldCore)
@@ -10,30 +8,35 @@ import JackfieldCore
 
 @available(iOS 13.0, *)
 public final class JackfieldPlugin: NSObject, FlutterPlugin {
+  private static let backgroundRuntime = JackfieldBackgroundRuntime.shared
   private let store: EventStore?
   private var controller: IOSCallController?
   private var registry: JackfieldPushRegistry?
-  private var callback: JackfieldHTTPDispatcher?
   private var eventsSink: FlutterEventSink?
   private var tokensSink: FlutterEventSink?
   private var pushToken: String?
   private var lastError: String?
 
   private override init() {
-    let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("jackfield", isDirectory: true)
-    try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
-    store = try? EventStore(path: folder.appendingPathComponent("events.sqlite3").path)
+    store = Self.backgroundRuntime.store
     super.init()
     if let store {
       controller = IOSCallController(store: store) { [weak self] event in self?.publish(event) }
-      Task { [weak self] in
-        guard let self, let config = try? await store.httpConfiguration(),
-              let endpoint = URL(string: config.endpoint), JackfieldCredentialStore.read() != nil else { return }
-        self.callback = JackfieldHTTPDispatcher(store: store, endpoint: endpoint, ttl: config.ttl, limit: config.limit)
-        await self.callback?.sendReady()
-      }
     }
     startPushRegistry()
+  }
+
+  public static func registerBackgroundProcessing() {
+    backgroundRuntime.registerBackgroundProcessing()
+  }
+
+  public static func resumeCallbackDelivery() {
+    Task { await backgroundRuntime.sendReady() }
+  }
+
+  @discardableResult
+  public static func handleBackgroundURLSessionEvents(_ identifier: String, completionHandler: @escaping () -> Void) -> Bool {
+    backgroundRuntime.handleBackgroundEvents(identifier, completionHandler: completionHandler)
   }
 
   public static func register(with registrar: FlutterPluginRegistrar) {
@@ -114,18 +117,9 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
             !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !token.contains("\r"), !token.contains("\n"),
             let ttl = value["timeToLiveMs"] as? Int, ttl > 0,
             let limit = value["maxPendingEvents"] as? Int, limit > 0 else { throw JackfieldCoreError.protocolFailure }
-      if let store {
-        let fingerprint = SHA256.hash(data: Data((endpoint + "\u{0}" + token).utf8)).map { String(format: "%02x", $0) }.joined()
-        try await store.configureHTTP(limit: limit, credentialFingerprint: fingerprint, endpoint: endpoint, ttl: TimeInterval(ttl) / 1000)
-        try JackfieldCredentialStore.save(token)
-        callback = JackfieldHTTPDispatcher(store: store, endpoint: url, ttl: TimeInterval(ttl) / 1000, limit: limit)
-        try await store.resumeHTTPAfterCredentialRotation()
-        Task { await callback?.sendReady() }
-      }
+      try await Self.backgroundRuntime.configure(endpoint: url, token: token, ttl: TimeInterval(ttl) / 1000, limit: limit)
     } else {
-      if let store { try await store.disableHTTP() }
-      callback = nil
-      JackfieldCredentialStore.delete()
+      try await Self.backgroundRuntime.disableCallbacks()
     }
   }
 
@@ -144,7 +138,7 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
   private func publish(_ event: WireEnvelope) {
     DispatchQueue.main.async { [weak self] in
       self?.eventsSink?(event.toWire())
-      Task { await self?.callback?.sendReady() }
+      Task { await Self.backgroundRuntime.sendReady() }
     }
   }
   private func replay() {
@@ -173,6 +167,7 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
     case .storageFull: return "storageFull"
     case .invalidState: return "invalidState"
     case .deadlineExceeded: return "deadlineExceeded"
+    case .temporarilyUnavailable: return "temporarilyUnavailable"
     default: return "platformFailure"
     }
   }
@@ -205,79 +200,4 @@ private final class JackfieldStreamHandler: NSObject, FlutterStreamHandler {
     onListenBlock(events); return nil
   }
   func onCancel(withArguments arguments: Any?) -> FlutterError? { onCancelBlock(); return nil }
-}
-
-private enum JackfieldCredentialStore {
-  private static let account = "jackfield.callback.bearer"
-  static func save(_ token: String) throws {
-    delete()
-    let status = SecItemAdd([kSecClass: kSecClassGenericPassword, kSecAttrAccount: account, kSecValueData: Data(token.utf8), kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly] as CFDictionary, nil)
-    guard status == errSecSuccess else { throw JackfieldCoreError.platformFailure }
-  }
-  static func read() -> String? {
-    var value: CFTypeRef?
-    let status = SecItemCopyMatching([kSecClass: kSecClassGenericPassword, kSecAttrAccount: account, kSecReturnData: true, kSecMatchLimit: kSecMatchLimitOne] as CFDictionary, &value)
-    guard status == errSecSuccess, let data = value as? Data else { return nil }
-    return String(data: data, encoding: .utf8)
-  }
-  static func delete() { SecItemDelete([kSecClass: kSecClassGenericPassword, kSecAttrAccount: account] as CFDictionary) }
-}
-
-@available(iOS 13.0, *)
-private final class JackfieldHTTPDispatcher: NSObject, URLSessionTaskDelegate {
-  private let store: EventStore
-  private let endpoint: URL
-  private let ttl: TimeInterval
-  private let limit: Int
-  private lazy var session: URLSession = {
-    let config = URLSessionConfiguration.background(withIdentifier: (Bundle.main.bundleIdentifier ?? "jackfield") + ".jackfield.callbacks")
-    config.isDiscretionary = false
-    config.sessionSendsLaunchEvents = true
-    return URLSession(configuration: config, delegate: self, delegateQueue: nil)
-  }()
-  init(store: EventStore, endpoint: URL, ttl: TimeInterval, limit: Int) {
-    self.store = store; self.endpoint = endpoint; self.ttl = ttl; self.limit = limit
-  }
-  func sendReady() async {
-    guard let token = JackfieldCredentialStore.read(), let ready = try? await store.readyHTTP(at: Date()) else { return }
-    let active = await withCheckedContinuation { (continuation: CheckedContinuation<Set<String>, Never>) in
-      session.getAllTasks { tasks in continuation.resume(returning: Set(tasks.compactMap(\.taskDescription))) }
-    }
-    for event in ready {
-      if active.contains(event.eventId) { continue }
-      if Date().timeIntervalSince(event.occurredAt) >= ttl { try? await store.markHTTPTerminal(event.eventId); continue }
-      var request = URLRequest(url: endpoint)
-      request.httpMethod = "POST"
-      request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-      request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-      request.setValue(event.eventId, forHTTPHeaderField: "Idempotency-Key")
-      guard let body = try? JSONSerialization.data(withJSONObject: ["version": 1, "event": event.toWire()]) else { continue }
-      let digest = SHA256.hash(data: Data(event.eventId.utf8)).map { String(format: "%02x", $0) }.joined()
-      let file = FileManager.default.temporaryDirectory.appendingPathComponent("jackfield-\(digest).json")
-      do { try body.write(to: file, options: .atomic) } catch { continue }
-      let task = session.uploadTask(with: request, fromFile: file)
-      task.taskDescription = event.eventId
-      task.resume()
-    }
-  }
-  func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-    completionHandler(nil)
-  }
-  func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-    guard let id = task.taskDescription else { return }
-    let digest = SHA256.hash(data: Data(id.utf8)).map { String(format: "%02x", $0) }.joined()
-    try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appendingPathComponent("jackfield-\(digest).json"))
-    Task {
-      let status = (task.response as? HTTPURLResponse)?.statusCode ?? 503
-      let retryAfter = (task.response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Retry-After").flatMap(TimeInterval.init)
-      try? await CallbackQueue(store: store).recordResponse(eventId: id, status: error == nil ? status : 503, at: Date(), retryAfter: retryAfter)
-      if error != nil || status == 429 || (500...599).contains(status) {
-        let attempts = (try? await store.httpAttempts(id)) ?? 1
-        let base = pow(2, Double(min(max(0, attempts - 1), 10)))
-        let delay = min(900, (retryAfter ?? 0) > 0 ? retryAfter ?? base : base)
-        try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-        await sendReady()
-      }
-    }
-  }
 }

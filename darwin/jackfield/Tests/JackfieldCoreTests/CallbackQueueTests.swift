@@ -11,7 +11,7 @@ final class CallbackQueueTests: XCTestCase {
     let event = try WireEnvelope.ended(callId: "call-1", eventId: "event-1", sequence: 0, occurredAt: Date(), reason: "remote")
     try await store.append(event)
     let queue = CallbackQueue(store: store)
-    try await queue.recordResponse(eventId: "event-1", status: 401, at: Date())
+    try await queue.recordResponse(eventId: "event-1", status: 401, credentialFingerprint: "old", at: Date())
     let reopened = try EventStore(path: path)
     let paused = try await reopened.httpPausedForAuthentication()
     XCTAssertTrue(paused)
@@ -95,5 +95,52 @@ final class CallbackQueueTests: XCTestCase {
     XCTAssertEqual(config?.endpoint, "https://example.test/hook")
     XCTAssertEqual(config?.ttl, 60)
     XCTAssertEqual(config?.limit, 7)
+  }
+
+  func testLateOldCredential401CannotPauseRotatedCredentials() async throws {
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let store = try EventStore(path: path)
+    try await store.configureHTTP(limit: 10, credentialFingerprint: "old")
+    let event = try WireEnvelope.ended(callId: "call-1", eventId: "event-1", sequence: 0, occurredAt: Date(), reason: "local")
+    try await store.append(event)
+    try await store.configureHTTP(limit: 10, credentialFingerprint: "new")
+    try await CallbackQueue(store: store).recordResponse(eventId: "event-1", status: 401, credentialFingerprint: "old", at: Date())
+    let paused = try await store.httpPausedForAuthentication()
+    XCTAssertFalse(paused)
+    let ready = try await store.readyHTTP(at: Date())
+    XCTAssertEqual(ready.map(\.eventId), ["event-1"])
+  }
+
+  func testNextWakeSurvivesReopenAndTracksEarliestRetry() async throws {
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let store = try EventStore(path: path)
+    let event = try WireEnvelope.ended(callId: "call-1", eventId: "event-1", sequence: 0, occurredAt: Date(timeIntervalSince1970: 100), reason: "local")
+    try await store.append(event)
+    try await store.scheduleHTTP("event-1", at: Date(timeIntervalSince1970: 250))
+    let reopened = try EventStore(path: path)
+    let due = try await reopened.nextHTTPWake()
+    XCTAssertEqual(due, Date(timeIntervalSince1970: 250))
+  }
+
+  func testTTLWakeAndExpiryReleaseCapacityWhileAuthenticationPaused() async throws {
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let store = try EventStore(path: path)
+    try await store.configureHTTP(limit: 1, credentialFingerprint: "old", endpoint: "https://example.test/hook", ttl: 60)
+    let event = try WireEnvelope.ended(callId: "call-1", eventId: "event-1", sequence: 0,
+                                        occurredAt: Date(timeIntervalSince1970: 100), reason: "local")
+    try await store.append(event)
+    try await store.scheduleHTTP("event-1", at: Date(timeIntervalSince1970: 500))
+    let wake = try await store.nextHTTPWake()
+    XCTAssertEqual(wake, Date(timeIntervalSince1970: 160))
+    try await store.pauseHTTPForAuthentication(using: "old")
+    try await store.expireHTTP(at: Date(timeIntervalSince1970: 160))
+    let pending = try await store.pendingHTTP()
+    XCTAssertTrue(pending.isEmpty)
+    let replacement = try WireEnvelope.ended(callId: "call-2", eventId: "event-2", sequence: 0,
+                                              occurredAt: Date(timeIntervalSince1970: 160), reason: "remote")
+    try await store.append(replacement)
   }
 }

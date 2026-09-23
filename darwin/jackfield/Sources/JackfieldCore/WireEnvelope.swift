@@ -1,7 +1,7 @@
 import Foundation
 
 public enum JackfieldCoreError: Error, Equatable {
-  case protocolFailure, storageFull, invalidState, deadlineExceeded, platformFailure
+  case protocolFailure, storageFull, invalidState, deadlineExceeded, temporarilyUnavailable, platformFailure
 }
 
 public struct WireEnvelope: Codable, Equatable, Sendable {
@@ -68,9 +68,10 @@ public struct CallRecord: Codable, Equatable, Sendable {
   public var actionId: String?
   public var actionDeadline: Date?
   public var actionReceipts: [ActionReceipt]
-  public init(callId: String, state: String, media: String, callerId: String? = nil, callerName: String? = nil, actionId: String? = nil, actionDeadline: Date? = nil, actionReceipts: [ActionReceipt] = []) {
+  public var systemUUID: UUID?
+  public init(callId: String, state: String, media: String, callerId: String? = nil, callerName: String? = nil, actionId: String? = nil, actionDeadline: Date? = nil, actionReceipts: [ActionReceipt] = [], systemUUID: UUID? = nil) {
     self.callId = callId; self.state = state; self.media = media; self.callerId = callerId; self.callerName = callerName
-    self.actionId = actionId; self.actionDeadline = actionDeadline; self.actionReceipts = actionReceipts
+    self.actionId = actionId; self.actionDeadline = actionDeadline; self.actionReceipts = actionReceipts; self.systemUUID = systemUUID
   }
   public func toWire() -> [String: Any] {
     var value: [String: Any] = ["callId": callId, "state": state, "media": media, "actionReceipts": actionReceipts.map { receipt in

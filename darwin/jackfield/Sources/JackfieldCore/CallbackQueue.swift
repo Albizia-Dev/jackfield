@@ -13,9 +13,12 @@ public struct CallbackQueue: Sendable {
   private let store: EventStore
   public init(store: EventStore) { self.store = store }
   public func ready(at date: Date) async throws -> [WireEnvelope] { try await store.readyHTTP(at: date) }
-  public func recordResponse(eventId: String, status: Int, at date: Date, retryAfter: TimeInterval? = nil) async throws {
+  public func recordResponse(eventId: String, status: Int, credentialFingerprint: String? = nil, at date: Date, retryAfter: TimeInterval? = nil) async throws {
     if (200...299).contains(status) { try await store.acknowledgeHTTP([eventId]); return }
-    if status == 401 || status == 403 { try await store.pauseHTTPForAuthentication(); return }
+    if status == 401 || status == 403 {
+      if let credentialFingerprint { try await store.pauseHTTPForAuthentication(using: credentialFingerprint) }
+      return
+    }
     if status == 429 || (500...599).contains(status) {
       let priorAttempts = try await store.httpAttempts(eventId)
       let base = min(900, pow(2, Double(min(priorAttempts, 10))))

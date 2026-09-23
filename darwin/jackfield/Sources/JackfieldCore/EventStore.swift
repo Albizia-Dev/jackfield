@@ -8,11 +8,25 @@ public actor EventStore {
 
   public init(path: String) throws {
     guard sqlite3_open_v2(path, &db, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else { throw JackfieldCoreError.platformFailure }
+    var versionStatement: OpaquePointer?
+    guard sqlite3_prepare_v2(db, "PRAGMA user_version", -1, &versionStatement, nil) == SQLITE_OK,
+          sqlite3_step(versionStatement) == SQLITE_ROW else { sqlite3_finalize(versionStatement); throw JackfieldCoreError.platformFailure }
+    let version = sqlite3_column_int(versionStatement, 0)
+    sqlite3_finalize(versionStatement)
+    guard version <= 1 else { throw JackfieldCoreError.protocolFailure }
     try Self.exec(db, "PRAGMA journal_mode=WAL")
     try Self.exec(db, "PRAGMA synchronous=FULL")
-    try Self.exec(db, "CREATE TABLE IF NOT EXISTS events (event_id TEXT PRIMARY KEY, call_id TEXT NOT NULL, sequence INTEGER NOT NULL, json BLOB NOT NULL, flutter_ack INTEGER NOT NULL DEFAULT 0, http_state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, next_at REAL NOT NULL DEFAULT 0)")
-    try Self.exec(db, "CREATE TABLE IF NOT EXISTS calls (call_id TEXT PRIMARY KEY, json BLOB NOT NULL)")
-    try Self.exec(db, "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    if version == 0 {
+      try Self.exec(db, "BEGIN IMMEDIATE")
+      do {
+        try Self.exec(db, "CREATE TABLE IF NOT EXISTS events (event_id TEXT PRIMARY KEY, call_id TEXT NOT NULL, sequence INTEGER NOT NULL, json BLOB NOT NULL, flutter_ack INTEGER NOT NULL DEFAULT 0, http_state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, next_at REAL NOT NULL DEFAULT 0)")
+        try Self.exec(db, "CREATE TABLE IF NOT EXISTS calls (call_id TEXT PRIMARY KEY, json BLOB NOT NULL)")
+        try Self.exec(db, "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        try Self.exec(db, "CREATE UNIQUE INDEX IF NOT EXISTS events_call_sequence ON events(call_id,sequence)")
+        try Self.exec(db, "PRAGMA user_version=1")
+        try Self.exec(db, "COMMIT")
+      } catch { try? Self.exec(db, "ROLLBACK"); throw error }
+    }
   }
   deinit { if let db { sqlite3_close(db) } }
 
@@ -30,7 +44,8 @@ public actor EventStore {
   private func run(_ sql: String, _ args: [String]) throws {
     let stmt = try statement(sql); defer { sqlite3_finalize(stmt) }
     for (offset, value) in args.enumerated() { bind(value, Int32(offset + 1), to: stmt) }
-    guard sqlite3_step(stmt) == SQLITE_DONE else { throw JackfieldCoreError.platformFailure }
+    let outcome = sqlite3_step(stmt)
+    guard outcome == SQLITE_DONE else { throw outcome == SQLITE_CONSTRAINT ? JackfieldCoreError.protocolFailure : JackfieldCoreError.platformFailure }
   }
   private func transaction<T>(_ body: () throws -> T) throws -> T {
     try exec("BEGIN IMMEDIATE")
@@ -52,13 +67,14 @@ public actor EventStore {
       throw JackfieldCoreError.storageFull
     }
     let httpState = try setting("http_enabled") == "0" ? "disabled" : "pending"
-    let stmt = try statement("INSERT OR IGNORE INTO events(event_id,call_id,sequence,json,http_state) VALUES(?,?,?,?,?)")
+    let stmt = try statement("INSERT INTO events(event_id,call_id,sequence,json,http_state) VALUES(?,?,?,?,?)")
     defer { sqlite3_finalize(stmt) }
     bind(event.eventId, 1, to: stmt); bind(event.callId, 2, to: stmt)
     sqlite3_bind_int64(stmt, 3, Int64(event.sequence))
     bind(try encoder.encode(event), 4, to: stmt)
     bind(httpState, 5, to: stmt)
-    guard sqlite3_step(stmt) == SQLITE_DONE else { throw JackfieldCoreError.platformFailure }
+    let outcome = sqlite3_step(stmt)
+    guard outcome == SQLITE_DONE else { throw outcome == SQLITE_CONSTRAINT ? JackfieldCoreError.protocolFailure : JackfieldCoreError.platformFailure }
   }
   private func put(_ snapshot: CallRecord) throws {
     let stmt = try statement("INSERT OR REPLACE INTO calls(call_id,json) VALUES(?,?)")
@@ -67,6 +83,42 @@ public actor EventStore {
     guard sqlite3_step(stmt) == SQLITE_DONE else { throw JackfieldCoreError.platformFailure }
   }
   public func append(_ event: WireEnvelope) throws { try transaction { try insert(event) } }
+  public func schemaVersion() throws -> Int {
+    let stmt = try statement("PRAGMA user_version"); defer { sqlite3_finalize(stmt) }
+    guard sqlite3_step(stmt) == SQLITE_ROW else { throw JackfieldCoreError.platformFailure }
+    return Int(sqlite3_column_int(stmt, 0))
+  }
+  private func nextSequence(_ callId: String) throws -> Int {
+    let stmt = try statement("SELECT COALESCE(MAX(sequence)+1,0) FROM events WHERE call_id=?")
+    defer { sqlite3_finalize(stmt) }; bind(callId, 1, to: stmt)
+    guard sqlite3_step(stmt) == SQLITE_ROW else { throw JackfieldCoreError.platformFailure }
+    return Int(sqlite3_column_int64(stmt, 0))
+  }
+  public func appendEnded(callId: String, eventId: String, reason: String, at date: Date) throws -> WireEnvelope {
+    try transaction {
+      let event = try WireEnvelope.ended(callId: callId, eventId: eventId, sequence: try nextSequence(callId), occurredAt: date, reason: reason)
+      try insert(event)
+      return event
+    }
+  }
+  public func saveAnswerRequested(callId: String, eventId: String, actionId: String, deadline: Date, at date: Date) throws -> WireEnvelope {
+    try transaction {
+      guard var record = try snapshot(callId: callId), record.state == "ringing" else { throw JackfieldCoreError.invalidState }
+      let event = try WireEnvelope.answerRequested(callId: callId, eventId: eventId, sequence: try nextSequence(callId), actionId: actionId, occurredAt: date, deadline: deadline)
+      record.state = "connecting"; record.actionId = actionId; record.actionDeadline = deadline
+      try put(record); try insert(event)
+      return event
+    }
+  }
+  public func saveEnded(callId: String, eventId: String, reason: String, at date: Date) throws -> WireEnvelope {
+    try transaction {
+      guard var record = try snapshot(callId: callId), record.state != "ended" else { throw JackfieldCoreError.invalidState }
+      let event = try WireEnvelope.ended(callId: callId, eventId: eventId, sequence: try nextSequence(callId), occurredAt: date, reason: reason)
+      record.state = "ended"
+      try put(record); try insert(event)
+      return event
+    }
+  }
   public func save(snapshot: CallRecord, event: WireEnvelope) throws {
     guard snapshot.callId == event.callId else { throw JackfieldCoreError.protocolFailure }
     try transaction { try put(snapshot); try insert(event) }
@@ -78,6 +130,18 @@ public actor EventStore {
     guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
     guard let bytes = sqlite3_column_blob(stmt, 0) else { throw JackfieldCoreError.platformFailure }
     return try decoder.decode(CallRecord.self, from: Data(bytes: bytes, count: Int(sqlite3_column_bytes(stmt, 0))))
+  }
+  public func allCallRecords() throws -> [CallRecord] {
+    let stmt = try statement("SELECT json FROM calls"); defer { sqlite3_finalize(stmt) }
+    var records: [CallRecord] = []
+    while sqlite3_step(stmt) == SQLITE_ROW {
+      guard let bytes = sqlite3_column_blob(stmt, 0) else { throw JackfieldCoreError.platformFailure }
+      records.append(try decoder.decode(CallRecord.self, from: Data(bytes: bytes, count: Int(sqlite3_column_bytes(stmt, 0)))))
+    }
+    return records
+  }
+  public func callId(for uuid: UUID) throws -> String? {
+    try allCallRecords().first(where: { $0.systemUUID == uuid })?.callId
   }
   private func events(_ whereClause: String) throws -> [WireEnvelope] {
     let stmt = try statement("SELECT json FROM events WHERE \(whereClause) ORDER BY call_id,sequence")
@@ -169,12 +233,11 @@ public actor EventStore {
   public func httpPausedForAuthentication() throws -> Bool {
     try setting("auth_pause") == "1"
   }
-  public func pauseHTTPForAuthentication() throws {
+  public func pauseHTTPForAuthentication(using fingerprint: String) throws {
     try transaction {
+      guard try setting("credential_fingerprint") == fingerprint else { return }
       try run("INSERT OR REPLACE INTO settings(key,value) VALUES('auth_pause','1')", [])
-      if let fingerprint = try setting("credential_fingerprint") {
-        try run("INSERT OR REPLACE INTO settings(key,value) VALUES('rejected_fingerprint',?)", [fingerprint])
-      }
+      try run("INSERT OR REPLACE INTO settings(key,value) VALUES('rejected_fingerprint',?)", [fingerprint])
     }
   }
   public func resumeHTTPAfterCredentialRotation() throws {
@@ -197,6 +260,33 @@ public actor EventStore {
     defer { sqlite3_finalize(stmt) }; bind(id, 1, to: stmt)
     guard sqlite3_step(stmt) == SQLITE_ROW else { throw JackfieldCoreError.invalidState }
     return Int(sqlite3_column_int64(stmt, 0))
+  }
+  public func nextHTTPWake() throws -> Date? {
+    let paused = try httpPausedForAuthentication()
+    let ttl = try httpConfiguration()?.ttl
+    let stmt = try statement("SELECT next_at,json FROM events WHERE http_state='pending'")
+    defer { sqlite3_finalize(stmt) }
+    var earliest: Date?
+    while sqlite3_step(stmt) == SQLITE_ROW {
+      guard let bytes = sqlite3_column_blob(stmt, 1) else { throw JackfieldCoreError.platformFailure }
+      let event = try decoder.decode(WireEnvelope.self, from: Data(bytes: bytes, count: Int(sqlite3_column_bytes(stmt, 1))))
+      let expiration = ttl.map { event.occurredAt.addingTimeInterval($0) }
+      let retry = paused ? nil : Date(timeIntervalSince1970: sqlite3_column_double(stmt, 0))
+      for candidate in [expiration, retry].compactMap({ $0 }) {
+        if let current = earliest { earliest = min(current, candidate) }
+        else { earliest = candidate }
+      }
+    }
+    return earliest
+  }
+  public func expireHTTP(at date: Date) throws {
+    guard let ttl = try httpConfiguration()?.ttl else { return }
+    let pending = try pendingHTTP()
+    try transaction {
+      for event in pending where date >= event.occurredAt.addingTimeInterval(ttl) {
+        try run("UPDATE events SET http_state='terminal' WHERE event_id=? AND http_state='pending'", [event.eventId])
+      }
+    }
   }
   public func readyHTTP(at date: Date) throws -> [WireEnvelope] {
     if try httpPausedForAuthentication() { return [] }
