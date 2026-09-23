@@ -108,7 +108,8 @@ final class IOSCallController: NSObject, CXProviderDelegate {
     let id = try await existingUUID(callId)
     let hadPendingAnswer = record.actionId.flatMap { pendingAnswers[$0] } != nil
     if let actionId = record.actionId, hadPendingAnswer {
-      _ = try? await complete(actionId: actionId, succeeded: false)
+      _ = try await complete(actionId: actionId, succeeded: false)
+      return try await store.snapshot(callId: callId) ?? record
     }
     if (reason == "local" || reason == "rejected") && !hadPendingAnswer {
       requestedEndReasons[id] = reason
@@ -125,11 +126,15 @@ final class IOSCallController: NSObject, CXProviderDelegate {
   func complete(actionId: String, succeeded: Bool, at date: Date = Date()) async throws -> ActionReceipt {
     let records = try await store.allCallRecords()
     guard let record = records.first(where: { $0.actionId == actionId }) else { throw JackfieldCoreError.invalidState }
-    if let receipt = record.actionReceipts.first(where: { $0.actionId == actionId }) { return receipt }
-    guard let action = pendingAnswers[actionId] else { throw JackfieldCoreError.temporarilyUnavailable }
-    let receipt = try await store.completeAction(actionId, succeeded: succeeded, at: date)
+    guard let action = pendingAnswers[actionId] else {
+      if let receipt = record.actionReceipts.first(where: { $0.actionId == actionId }) { return receipt }
+      throw JackfieldCoreError.temporarilyUnavailable
+    }
+    let resolution = try await store.resolveAnswer(actionId, succeeded: succeeded, eventId: UUID().uuidString, at: date)
     pendingAnswers.removeValue(forKey: actionId)
     answerDeadlines.removeValue(forKey: actionId)?.cancel()
+    if let event = resolution.ended { publish(event) }
+    let receipt = resolution.receipt
     if receipt.succeeded { action.fulfill() }
     else {
       action.fail()
@@ -151,11 +156,18 @@ final class IOSCallController: NSObject, CXProviderDelegate {
   private func reconcileSystemCalls() async {
     guard let records = try? await store.allCallRecords() else { return }
     let observed = Set(callObserver.calls.filter { !$0.hasEnded }.map(\.uuid))
-    for record in records where !["ended", "failed"].contains(record.state) {
+    for record in records where record.state != "ended" {
+      if record.state == "failed" {
+        if let event = try? await store.saveEnded(callId: record.callId, eventId: UUID().uuidString, reason: "failed", at: Date()) { publish(event) }
+        if let id = record.systemUUID, observed.contains(id) { provider.reportCall(with: id, endedAt: Date(), reason: .failed) }
+        continue
+      }
       guard let id = record.systemUUID, observed.contains(id) else {
-        if let actionId = record.actionId,
+        if record.state == "connecting", let actionId = record.actionId,
            !record.actionReceipts.contains(where: { $0.actionId == actionId }) {
-          _ = try? await store.completeAction(actionId, succeeded: false, at: Date())
+          if let resolution = try? await store.resolveAnswer(actionId, succeeded: false, eventId: UUID().uuidString, at: Date()),
+             let event = resolution.ended { publish(event) }
+          continue
         }
         if let event = try? await store.saveEnded(callId: record.callId, eventId: UUID().uuidString, reason: "failed", at: Date()) { publish(event) }
         continue
@@ -164,9 +176,9 @@ final class IOSCallController: NSObject, CXProviderDelegate {
       callIds[id] = record.callId
       if record.state == "connecting", let actionId = record.actionId,
          !record.actionReceipts.contains(where: { $0.actionId == actionId }) {
-        _ = try? await store.completeAction(actionId, succeeded: false, at: Date())
+        if let resolution = try? await store.resolveAnswer(actionId, succeeded: false, eventId: UUID().uuidString, at: Date()),
+           let event = resolution.ended { publish(event) }
         provider.reportCall(with: id, endedAt: Date(), reason: .failed)
-        if let event = try? await store.saveEnded(callId: record.callId, eventId: UUID().uuidString, reason: "failed", at: Date()) { publish(event) }
       }
     }
   }
@@ -213,10 +225,15 @@ final class IOSCallController: NSObject, CXProviderDelegate {
               let record = try await store.snapshot(callId: callId) else { action.fail(); return }
         if record.state != "ended" {
           if let actionId = record.actionId, pendingAnswers[actionId] != nil {
-            _ = try? await complete(actionId: actionId, succeeded: false)
+            _ = try await complete(actionId: actionId, succeeded: false)
+          } else if record.state == "connecting", let actionId = record.actionId,
+                    !record.actionReceipts.contains(where: { $0.actionId == actionId }) {
+            let resolution = try await store.resolveAnswer(actionId, succeeded: false, eventId: UUID().uuidString, at: Date())
+            if let event = resolution.ended { publish(event) }
+          } else {
+            let event = try await store.saveEnded(callId: callId, eventId: UUID().uuidString, reason: reason, at: Date())
+            publish(event)
           }
-          let event = try await store.saveEnded(callId: callId, eventId: UUID().uuidString, reason: reason, at: Date())
-          publish(event)
         }
         action.fulfill()
       } catch { action.fail() }

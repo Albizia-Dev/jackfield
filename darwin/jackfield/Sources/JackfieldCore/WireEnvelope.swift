@@ -23,6 +23,10 @@ public struct WireEnvelope: Codable, Equatable, Sendable {
     try Self(type: "ended", callId: callId, eventId: eventId, sequence: sequence, occurredAt: occurredAt, actionId: nil, deadline: nil, reason: reason)
   }
 
+  func resequenced(_ sequence: Int) throws -> Self {
+    try Self(type: type, callId: callId, eventId: eventId, sequence: sequence, occurredAt: occurredAt, actionId: actionId, deadline: deadline, reason: reason)
+  }
+
   private init(type: String, callId: String, eventId: String, sequence: Int, occurredAt: Date, actionId: String?, deadline: Date?, reason: String?) throws {
     guard !callId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
           !eventId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, sequence >= 0 else { throw JackfieldCoreError.protocolFailure }

@@ -22,8 +22,10 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
     super.init()
     if let store {
       controller = IOSCallController(store: store) { [weak self] event in self?.publish(event) }
+      startPushRegistry()
+    } else {
+      lastError = "platformFailure"
     }
-    startPushRegistry()
   }
 
   public static func registerBackgroundProcessing() {
@@ -56,7 +58,7 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
     guard let data = call.arguments as? [String: Any], (data["version"] as? Int) == 1 else { result(Self.failure("protocolFailure")); return }
     Task { @MainActor in
       do {
-        guard let store = self.store else { throw JackfieldCoreError.platformFailure }
+        guard let store = self.store else { throw Self.backgroundRuntime.storageFailure ?? JackfieldCoreError.platformFailure }
         switch call.method {
         case "initialize":
           try await self.configure(data)
@@ -142,7 +144,10 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
     }
   }
   private func replay() {
-    guard let store else { return }
+    guard let store else {
+      eventsSink?(FlutterError(code: "platformFailure", message: "Native storage unavailable", details: nil))
+      return
+    }
     Task { [weak self] in
       guard let self else { return }
       guard let pending = try? await store.pendingFlutter() else { return }

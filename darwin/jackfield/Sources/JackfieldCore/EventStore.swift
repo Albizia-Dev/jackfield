@@ -22,6 +22,7 @@ public actor EventStore {
         try Self.exec(db, "CREATE TABLE IF NOT EXISTS events (event_id TEXT PRIMARY KEY, call_id TEXT NOT NULL, sequence INTEGER NOT NULL, json BLOB NOT NULL, flutter_ack INTEGER NOT NULL DEFAULT 0, http_state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, next_at REAL NOT NULL DEFAULT 0)")
         try Self.exec(db, "CREATE TABLE IF NOT EXISTS calls (call_id TEXT PRIMARY KEY, json BLOB NOT NULL)")
         try Self.exec(db, "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        try Self.renumberLegacyEvents(db)
         try Self.exec(db, "CREATE UNIQUE INDEX IF NOT EXISTS events_call_sequence ON events(call_id,sequence)")
         try Self.exec(db, "PRAGMA user_version=1")
         try Self.exec(db, "COMMIT")
@@ -32,6 +33,37 @@ public actor EventStore {
 
   private static func exec(_ db: OpaquePointer?, _ sql: String) throws {
     guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { throw JackfieldCoreError.platformFailure }
+  }
+  private static func renumberLegacyEvents(_ db: OpaquePointer?) throws {
+    var query: OpaquePointer?
+    guard sqlite3_prepare_v2(db, "SELECT rowid,json FROM events ORDER BY call_id,sequence,rowid", -1, &query, nil) == SQLITE_OK else { throw JackfieldCoreError.platformFailure }
+    defer { sqlite3_finalize(query) }
+    var rows: [(Int64, WireEnvelope)] = []
+    let decoder = JSONDecoder()
+    var outcome = sqlite3_step(query)
+    while outcome == SQLITE_ROW {
+      guard let bytes = sqlite3_column_blob(query, 1) else { throw JackfieldCoreError.platformFailure }
+      rows.append((sqlite3_column_int64(query, 0), try decoder.decode(WireEnvelope.self, from: Data(bytes: bytes, count: Int(sqlite3_column_bytes(query, 1))))))
+      outcome = sqlite3_step(query)
+    }
+    guard outcome == SQLITE_DONE else { throw JackfieldCoreError.platformFailure }
+    let encoder = JSONEncoder()
+    var previousCallId: String?
+    var sequence = 0
+    for (rowId, event) in rows {
+      if event.callId != previousCallId { previousCallId = event.callId; sequence = 0 }
+      let rewritten = try event.resequenced(sequence)
+      let data = try encoder.encode(rewritten)
+      var update: OpaquePointer?
+      guard sqlite3_prepare_v2(db, "UPDATE events SET sequence=?,json=? WHERE rowid=?", -1, &update, nil) == SQLITE_OK else { throw JackfieldCoreError.platformFailure }
+      sqlite3_bind_int64(update, 1, Int64(sequence))
+      _ = data.withUnsafeBytes { sqlite3_bind_blob(update, 2, $0.baseAddress, Int32(data.count), unsafeBitCast(-1, to: sqlite3_destructor_type.self)) }
+      sqlite3_bind_int64(update, 3, rowId)
+      let outcome = sqlite3_step(update)
+      sqlite3_finalize(update)
+      guard outcome == SQLITE_DONE else { throw JackfieldCoreError.platformFailure }
+      sequence += 1
+    }
   }
   private func exec(_ sql: String) throws { try Self.exec(db, sql) }
   private func statement(_ sql: String) throws -> OpaquePointer? {
@@ -52,7 +84,7 @@ public actor EventStore {
     do { let value = try body(); try exec("COMMIT"); return value }
     catch { try? exec("ROLLBACK"); throw error }
   }
-  private func insert(_ event: WireEnvelope) throws {
+  private func insert(_ event: WireEnvelope, admissionCritical: Bool = false) throws {
     let prior = try statement("SELECT json FROM events WHERE event_id=?")
     bind(event.eventId, 1, to: prior)
     if sqlite3_step(prior) == SQLITE_ROW {
@@ -63,7 +95,7 @@ public actor EventStore {
       return
     }
     sqlite3_finalize(prior)
-    if let limit = try setting("http_limit").flatMap(Int.init), try pendingHTTPCount() >= limit {
+    if !admissionCritical, let limit = try setting("http_limit").flatMap(Int.init), try pendingHTTPCount() >= limit {
       throw JackfieldCoreError.storageFull
     }
     let httpState = try setting("http_enabled") == "0" ? "disabled" : "pending"
@@ -167,24 +199,33 @@ public actor EventStore {
   }
   public func acknowledgeFlutter(_ ids: Set<String>) throws { try transaction { for id in ids { try run("UPDATE events SET flutter_ack=1 WHERE event_id=?", [id]) } } }
   public func acknowledgeHTTP(_ ids: Set<String>) throws { try transaction { for id in ids { try run("UPDATE events SET http_state='acknowledged' WHERE event_id=?", [id]) } } }
-  public func completeAction(_ actionId: String, succeeded: Bool, at now: Date) throws -> ActionReceipt {
-    let stmt = try statement("SELECT json FROM calls")
-    defer { sqlite3_finalize(stmt) }
-    var found: CallRecord?
-    while sqlite3_step(stmt) == SQLITE_ROW {
-      guard let bytes = sqlite3_column_blob(stmt, 0) else { throw JackfieldCoreError.platformFailure }
-      let item = try decoder.decode(CallRecord.self, from: Data(bytes: bytes, count: Int(sqlite3_column_bytes(stmt, 0))))
-      if item.actionId == actionId { found = item; break }
+  public func resolveAnswer(_ actionId: String, succeeded: Bool, eventId: String, at now: Date) throws -> (receipt: ActionReceipt, ended: WireEnvelope?) {
+    try transaction {
+      let stmt = try statement("SELECT json FROM calls")
+      defer { sqlite3_finalize(stmt) }
+      var found: CallRecord?
+      while sqlite3_step(stmt) == SQLITE_ROW {
+        guard let bytes = sqlite3_column_blob(stmt, 0) else { throw JackfieldCoreError.platformFailure }
+        let item = try decoder.decode(CallRecord.self, from: Data(bytes: bytes, count: Int(sqlite3_column_bytes(stmt, 0))))
+        if item.actionId == actionId { found = item; break }
+      }
+      guard var record = found else { throw JackfieldCoreError.invalidState }
+      if let prior = record.actionReceipts.first(where: { $0.actionId == actionId }) { return (prior, nil) }
+      guard record.state == "connecting", let deadline = record.actionDeadline else { throw JackfieldCoreError.invalidState }
+      let expired = now > deadline
+      let receipt = ActionReceipt(actionId: actionId, succeeded: succeeded && !expired, errorCode: expired ? "deadlineExceeded" : nil)
+      record.actionReceipts.append(receipt)
+      if receipt.succeeded {
+        record.state = "active"
+        try put(record)
+        return (receipt, nil)
+      }
+      let event = try WireEnvelope.ended(callId: record.callId, eventId: eventId, sequence: try nextSequence(record.callId), occurredAt: now, reason: "failed")
+      record.state = "ended"
+      try put(record)
+      try insert(event, admissionCritical: true)
+      return (receipt, event)
     }
-    guard var record = found else { throw JackfieldCoreError.invalidState }
-    if let prior = record.actionReceipts.first(where: { $0.actionId == actionId }) { return prior }
-    guard record.state == "connecting", let deadline = record.actionDeadline else { throw JackfieldCoreError.invalidState }
-    let expired = now > deadline
-    let receipt = ActionReceipt(actionId: actionId, succeeded: succeeded && !expired, errorCode: expired ? "deadlineExceeded" : nil)
-    record.actionReceipts.append(receipt)
-    record.state = expired ? "failed" : (succeeded ? "active" : "failed")
-    try transaction { try put(record) }
-    return receipt
   }
   public func pendingHTTPCount() throws -> Int { try count("http_state='pending'") }
   public func pendingFlutterCount() throws -> Int { try count("flutter_ack=0") }

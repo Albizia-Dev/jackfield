@@ -15,6 +15,7 @@ final class JackfieldBackgroundRuntime {
   static let sessionIdentifier = (Bundle.main.bundleIdentifier ?? "jackfield") + ".jackfield.callbacks"
 
   let store: EventStore?
+  let storageFailure: JackfieldCoreError?
   private let dispatcher: JackfieldHTTPDispatcher?
   private var registered = false
 
@@ -23,7 +24,13 @@ final class JackfieldBackgroundRuntime {
       .appendingPathComponent("jackfield", isDirectory: true)
     try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
                                              attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
-    store = try? EventStore(path: folder.appendingPathComponent("events.sqlite3").path)
+    do {
+      store = try EventStore(path: folder.appendingPathComponent("events.sqlite3").path)
+      storageFailure = nil
+    } catch {
+      store = nil
+      storageFailure = .platformFailure
+    }
     if let store {
       dispatcher = JackfieldHTTPDispatcher(store: store)
     } else { dispatcher = nil }
@@ -58,6 +65,7 @@ final class JackfieldBackgroundRuntime {
   }
 
   func registerBackgroundProcessing() {
+    guard store != nil else { return }
     guard !registered else { return }
     registered = BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.refreshIdentifier, using: nil) { [weak self] task in
       guard let self else { task.setTaskCompleted(success: false); return }
