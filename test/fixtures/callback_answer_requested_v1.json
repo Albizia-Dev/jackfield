@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "event": {
+    "version": 1,
+    "callId": "call-1",
+    "eventId": "event-7",
+    "sequence": 2,
+    "occurredAt": "2026-09-23T05:00:00.000Z",
+    "type": "answer_requested",
+    "actionId": "action-3",
+    "deadline": "2026-09-23T05:00:30.000Z"
+  }
+}

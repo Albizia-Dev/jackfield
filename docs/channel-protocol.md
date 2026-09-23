@@ -41,7 +41,8 @@
 `timeToLiveMs` и `maxPendingEvents`. По умолчанию TTL — 24 часа, предел — 1000.
 Пустые credentials и CR/LF отклоняются. Инициализация не запрашивает разрешения.
 Credentials не допускаются в событиях и diagnostics. Native-адаптер хранит их
-защищённо там, где это поддерживается. Retry policy задаётся отдельной задачей.
+защищённо там, где это поддерживается. Политика повторов и HTTP envelope
+описаны в [HTTPS callbacks](http-callbacks.md).
 
 ## Ответы
 
