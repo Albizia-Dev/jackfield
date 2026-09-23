@@ -3,6 +3,13 @@
   const databaseName = scope.JackfieldDatabaseName || 'jackfield-v1';
   const stores = ['snapshots', 'inbox', 'outbox', 'receipts', 'meta'];
   let settings = { leaseMs: 45000, heartbeatMs: 15000 };
+  let deadlineTimer = null;
+  const presentingCalls = new Set();
+
+  function configFingerprint(config) {
+    return config && JSON.stringify([config.endpoint, config.auth?.type, config.auth?.token,
+      config.timeToLiveMs, config.maxPendingEvents]);
+  }
 
   function request(req) {
     return new Promise((resolve, reject) => {
@@ -47,11 +54,16 @@
     }
   }
 
+  function orderedEvents(items) {
+    return items.filter(item => !item.acknowledged && item.event).map(item => item.event)
+      .sort((a, b) => a.callId.localeCompare(b.callId) || a.sequence - b.sequence || a.eventId.localeCompare(b.eventId));
+  }
+
   async function pending(owner, token, clientId) {
     return transaction(['meta', 'inbox'], 'readonly', async tx => {
       const lease = await request(tx.objectStore('meta').get('owner'));
       if (!lease || lease.owner !== owner || lease.token !== token || lease.expiresAt <= Date.now() || clientId && lease.clientId !== clientId) return null;
-      return (await request(tx.objectStore('inbox').getAll())).filter(item => !item.acknowledged && item.event).map(item => item.event);
+      return orderedEvents(await request(tx.objectStore('inbox').getAll()));
     });
   }
 
@@ -65,8 +77,7 @@
       const renewing = current && current.owner === owner && current.clientId === clientId && current.expiresAt > now;
       const token = renewing ? current.token : scope.crypto.randomUUID();
       store.put({ id: 'owner', owner, clientId, token, expiresAt: now + settings.leaseMs });
-      const replay = renewing ? [] :
-        (await request(tx.objectStore('inbox').getAll())).filter(item => !item.acknowledged && item.event).map(item => item.event);
+      const replay = renewing ? [] : orderedEvents(await request(tx.objectStore('inbox').getAll()));
       return { token, pending: replay };
     });
   }
@@ -122,21 +133,117 @@
       inbox.put({ id: event.eventId, event, acknowledged: false });
       if (snapshot) tx.objectStore('snapshots').put({ id: snapshot.callId, ...snapshot });
       if (receipt) tx.objectStore('receipts').put(receipt);
-      const meta = tx.objectStore('meta');
-      const config = await request(meta.get('callbackConfig'));
-      if (!config) return { admitted: false };
-      const existing = await request(tx.objectStore('outbox').getAll());
-      if (existing.filter(item => item.state === 'pending' || item.state === 'sending').length >= config.maxPendingEvents) {
-        meta.put({ id: 'httpDiagnostic', code: 'queueFull', eventId: event.eventId });
-        return { admitted: false };
-      }
-      tx.objectStore('outbox').put({ id: event.eventId, event, state: 'pending', attempt: 0, nextAt: 0,
-        expiresAt: Date.parse(event.occurredAt) + config.timeToLiveMs });
-      return { admitted: true };
+      return { admitted: await admitCallback(tx, event) };
     });
     if (!persisted) return;
     try { await publish(event); }
     finally { if (persisted.admitted) await scheduleOutbox(); }
+  }
+
+  async function admitCallback(tx, event) {
+    const meta = tx.objectStore('meta');
+    const config = await request(meta.get('callbackConfig'));
+    if (!config) return false;
+    const existing = await request(tx.objectStore('outbox').getAll());
+    if (existing.filter(item => item.state === 'pending' || item.state === 'sending').length >= config.maxPendingEvents) {
+      meta.put({ id: 'httpDiagnostic', code: 'queueFull', eventId: event.eventId });
+      return false;
+    }
+    tx.objectStore('outbox').put({ id: event.eventId, event, state: 'pending', attempt: 0, nextAt: 0,
+      expiresAt: Date.parse(event.occurredAt) + config.timeToLiveMs });
+    return true;
+  }
+
+  async function closeCallNotifications(callId) {
+    const notifications = await scope.registration.getNotifications?.({ tag: callId }) || [];
+    for (const notification of notifications) {
+      if (notification.tag === callId) notification.close();
+    }
+  }
+
+  async function terminalize(callId, reason, expectedActionId) {
+    const result = await transaction(['snapshots', 'inbox', 'outbox', 'meta', 'receipts'], 'readwrite', async tx => {
+      const snapshots = tx.objectStore('snapshots');
+      const current = await request(snapshots.get(callId));
+      if (!current) return null;
+      if (current.state === 'ended' || current.state === 'failed') return { snapshot: current };
+      if (expectedActionId && (current.state !== 'connecting' || current.actionId !== expectedActionId)) return { snapshot: current };
+      const event = { version: 1, type: 'ended', callId, eventId: scope.crypto.randomUUID(),
+        sequence: (current.sequence || 0) + 1, occurredAt: new Date().toISOString(), reason };
+      const snapshot = { ...current, state: reason === 'failed' ? 'failed' : 'ended', sequence: event.sequence };
+      snapshots.put(snapshot);
+      if (expectedActionId) {
+        const receipts = tx.objectStore('receipts');
+        const receipt = await request(receipts.get(expectedActionId));
+        if (receipt) receipts.put({ ...receipt, expired: true });
+      }
+      tx.objectStore('inbox').put({ id: event.eventId, event, acknowledged: false });
+      return { snapshot, event, admitted: await admitCallback(tx, event) };
+    });
+    if (!result) return null;
+    try {
+      if (result.event) {
+        try { await publish(result.event); }
+        catch (_) { await diagnostic('publishFailure', result.event.eventId); }
+        if (result.admitted) await scheduleOutbox();
+      }
+    } finally {
+      await closeCallNotifications(callId);
+    }
+    if (result.event) await safeDrain();
+    return result.snapshot;
+  }
+
+  async function scheduleDeadlineRecovery() {
+    if (deadlineTimer !== null) scope.clearTimeout(deadlineTimer);
+    deadlineTimer = null;
+    const nextAt = await transaction(['snapshots', 'receipts'], 'readonly', async tx => {
+      const snapshots = tx.objectStore('snapshots');
+      const receipts = await request(tx.objectStore('receipts').getAll());
+      let earliest = null;
+      for (const receipt of receipts) {
+        if (receipt.completed || receipt.expired || !Number.isFinite(receipt.deadline)) continue;
+        const snapshot = await request(snapshots.get(receipt.callId));
+        if (snapshot?.state !== 'connecting' || snapshot.actionId !== receipt.id) continue;
+        earliest = earliest === null ? receipt.deadline : Math.min(earliest, receipt.deadline);
+      }
+      return earliest;
+    });
+    if (nextAt === null) return;
+    deadlineTimer = scope.setTimeout(() => {
+      deadlineTimer = null;
+      void recoverDeadlines().catch(() => diagnostic('deadlineRecoveryFailure', ''));
+    },
+      Math.max(0, nextAt - Date.now()));
+    deadlineTimer?.unref?.();
+    try { await scope.registration.sync?.register('jackfield-deadline'); } catch (_) { /* local and future worker wakes still recover */ }
+    try { await scope.registration.periodicSync?.register('jackfield-deadline', { minInterval: 900000 }); }
+    catch (_) { /* periodic sync is optional */ }
+  }
+
+  async function recoverDeadlines() {
+    const expired = await transaction(['receipts'], 'readonly', async tx =>
+      (await request(tx.objectStore('receipts').getAll()))
+        .filter(receipt => !receipt.completed && !receipt.expired && Number.isFinite(receipt.deadline) && receipt.deadline <= Date.now()));
+    for (const receipt of expired) await terminalize(receipt.callId, 'failed', receipt.id);
+    await scheduleDeadlineRecovery();
+  }
+
+  async function reconcilePresentations() {
+    const presenting = await transaction(['snapshots'], 'readonly', async tx =>
+      (await request(tx.objectStore('snapshots').getAll()))
+        .filter(snapshot => snapshot.state === 'presenting' && !presentingCalls.has(snapshot.callId)));
+    if (!presenting.length) return;
+    const visible = await scope.registration.getNotifications?.() || [];
+    for (const snapshot of presenting) {
+      const shown = visible.some(notification => notification.tag === snapshot.callId);
+      await transaction(['snapshots'], 'readwrite', async tx => {
+        const store = tx.objectStore('snapshots');
+        const current = await request(store.get(snapshot.callId));
+        if (current?.state === 'presenting' && !presentingCalls.has(snapshot.callId))
+          store.put({ ...current, state: shown ? 'ringing' : 'presentationFailed' });
+      });
+    }
   }
 
   async function diagnostic(code, eventId) {
@@ -172,29 +279,56 @@
       await scope.registration.showNotification('Call unavailable', { body: 'Invitation could not be opened.' });
       return;
     }
-    const accepted = await transaction(['meta', 'snapshots', 'inbox'], 'readwrite', async tx => {
-      const binding = await request(tx.objectStore('meta').get('pushBinding'));
-      if (!binding || binding.installationId !== payload.installationId || binding.sessionId !== payload.sessionId) return 'binding';
-      const snapshots = tx.objectStore('snapshots');
-      const inbox = tx.objectStore('inbox');
-      if (await request(inbox.get(payload.eventId))) return 'duplicate';
-      if (await request(snapshots.get(payload.callId))) return 'duplicate';
-      snapshots.put({ id: payload.callId, callId: payload.callId, caller: payload.caller, media: payload.media,
-        installationId: payload.installationId, sessionId: payload.sessionId,
-        state: 'ringing', sequence: 0, actionReceipts: [] });
-      inbox.put({ id: payload.eventId, invitation: payload, acknowledged: true });
-      return 'accepted';
-    });
-    if (accepted === 'binding') {
-      await scope.registration.showNotification('Call unavailable', { body: 'Invitation could not be opened.' });
-      return;
-    }
-    if (accepted !== 'accepted') return;
-    await scope.registration.showNotification(payload.caller.displayName, {
-      body: 'Incoming call', tag: payload.callId, data: { callId: payload.callId, eventId: payload.eventId },
-      actions: [{ action: 'answer', title: 'Answer' }, { action: 'reject', title: 'Reject' }],
-    });
-    await safeDrain();
+    await reconcilePresentations();
+    if (presentingCalls.has(payload.callId)) return;
+    presentingCalls.add(payload.callId);
+    try {
+      const accepted = await transaction(['meta', 'snapshots', 'inbox'], 'readwrite', async tx => {
+        const binding = await request(tx.objectStore('meta').get('pushBinding'));
+        if (!binding || binding.installationId !== payload.installationId || binding.sessionId !== payload.sessionId) return 'binding';
+        const snapshots = tx.objectStore('snapshots');
+        const inbox = tx.objectStore('inbox');
+        const prior = await request(snapshots.get(payload.callId));
+        const invitation = await request(inbox.get(payload.eventId));
+        if (prior) {
+          if (prior.state !== 'presentationFailed' || invitation?.invitation?.eventId !== payload.eventId ||
+              prior.installationId !== payload.installationId || prior.sessionId !== payload.sessionId ||
+              prior.caller?.id !== payload.caller.id || prior.media !== payload.media) return 'duplicate';
+          snapshots.put({ ...prior, state: 'presenting' });
+          return 'accepted';
+        }
+        if (invitation) return 'duplicate';
+        snapshots.put({ id: payload.callId, callId: payload.callId, caller: payload.caller, media: payload.media,
+          installationId: payload.installationId, sessionId: payload.sessionId,
+          state: 'presenting', sequence: 0, actionReceipts: [] });
+        inbox.put({ id: payload.eventId, invitation: payload, acknowledged: true });
+        return 'accepted';
+      });
+      if (accepted === 'binding') {
+        await scope.registration.showNotification('Call unavailable', { body: 'Invitation could not be opened.' });
+        return;
+      }
+      if (accepted !== 'accepted') return;
+      try {
+        await scope.registration.showNotification(payload.caller.displayName, {
+          body: 'Incoming call', tag: payload.callId, data: { callId: payload.callId, eventId: payload.eventId },
+          actions: [{ action: 'answer', title: 'Answer' }, { action: 'reject', title: 'Reject' }],
+        });
+        await transaction(['snapshots'], 'readwrite', async tx => {
+          const store = tx.objectStore('snapshots');
+          const current = await request(store.get(payload.callId));
+          if (current?.state === 'presenting') store.put({ ...current, state: 'ringing' });
+        });
+      } catch (error) {
+        await transaction(['snapshots'], 'readwrite', async tx => {
+          const store = tx.objectStore('snapshots');
+          const current = await request(store.get(payload.callId));
+          if (current?.state === 'presenting') store.put({ ...current, state: 'presentationFailed' });
+        });
+        throw error;
+      }
+      await safeDrain();
+    } finally { presentingCalls.delete(payload.callId); }
   }
 
   async function click(event) {
@@ -217,6 +351,7 @@
     await persistEvent(wire, { ...current, state: ended ? 'ended' : 'connecting', sequence: wire.sequence,
       ...(!ended ? { actionId, actionDeadline: wire.deadline } : {}) },
       ended ? null : { id: actionId, callId, deadline: Date.parse(wire.deadline), completed: false });
+    if (!ended) await scheduleDeadlineRecovery();
     await safeDrain();
   }
 
@@ -235,7 +370,11 @@
       const old = await request(store.get('callbackConfig'));
       if (callbacks) store.put({ id: 'callbackConfig', ...callbacks });
       else store.delete('callbackConfig');
-      if (!old || !callbacks || old.auth.token !== callbacks.auth.token) store.delete('authPaused');
+      if (configFingerprint(old) !== configFingerprint(callbacks)) {
+        const generation = await request(store.get('callbackGeneration'));
+        store.put({ id: 'callbackGeneration', value: (generation?.value || 0) + 1 });
+        store.delete('authPaused');
+      }
     });
     await scheduleOutbox();
   }
@@ -264,13 +403,14 @@
           const token = scope.crypto.randomUUID();
           const claimed = { ...item, state: 'sending', claimToken: token, claimUntil: now + 30000 };
           tx.objectStore('outbox').put(claimed);
-          return { item: claimed, config };
+          const generation = await request(meta.get('callbackGeneration'));
+          return { item: claimed, config, configKey: configFingerprint(config), configGeneration: generation?.value || 0 };
         }
         return { waiting: true };
       });
       if (job.skip) return;
       if (job.waiting) { await scheduleOutbox(); return; }
-      const { item, config } = job;
+      const { item, config, configKey, configGeneration } = job;
       let status = 0;
       let retryAfter = 0;
       try {
@@ -286,16 +426,23 @@
           if (Number.isFinite(parsed) && parsed > 0) retryAfter = parsed;
         }
       } catch (_) { /* network failure is retryable */ }
-      await transaction(['outbox', 'meta'], 'readwrite', async tx => {
+      const staleConfig = await transaction(['outbox', 'meta'], 'readwrite', async tx => {
         const outbox = tx.objectStore('outbox');
         const current = await request(outbox.get(item.id));
-        if (!current || current.claimToken !== item.claimToken || current.state !== 'sending') return;
+        if (!current || current.claimToken !== item.claimToken || current.state !== 'sending') return false;
+        const meta = tx.objectStore('meta');
+        const generation = await request(meta.get('callbackGeneration'));
+        if (configFingerprint(await request(meta.get('callbackConfig'))) !== configKey ||
+            (generation?.value || 0) !== configGeneration) {
+          outbox.put({ ...current, state: 'pending', nextAt: 0 });
+          return true;
+        }
         const now = Date.now();
         const attempt = current.attempt + 1;
         if (status >= 200 && status < 300) {
           outbox.put({ ...current, state: 'delivered', attempt, httpStatus: status, completedAt: now });
         } else if (status === 401 || status === 403) {
-          tx.objectStore('meta').put({ id: 'authPaused', value: true });
+          meta.put({ id: 'authPaused', value: true });
           outbox.put({ ...current, state: 'pending', attempt, httpStatus: status, nextAt: now });
         } else if (now >= current.expiresAt || status >= 300 && status < 500 && status !== 429) {
           outbox.put({ ...current, state: 'terminal', attempt, httpStatus: status, outcome: now >= current.expiresAt ? 'expired' : 'httpError', completedAt: now });
@@ -304,7 +451,9 @@
           const delay = Math.min(900000, Math.round(base * (0.8 + Math.random() * 0.2)));
           outbox.put({ ...current, state: 'pending', attempt, httpStatus: status, nextAt: Math.min(now + delay, current.expiresAt) });
         }
+        return false;
       });
+      if (staleConfig) continue;
       if (status === 401 || status === 403) return;
       if (status === 0 || status === 429 || status >= 500) {
         await scheduleOutbox();
@@ -319,8 +468,13 @@
 
   async function command(message, clientId) {
     if (message.version !== 1) throw new Error('unsupported version');
+    if (message.command === 'completeAction' || message.command === 'end') await recoverDeadlines();
     switch (message.command) {
-      case 'initialize': await configure(message.callbacks || null); return { status: 'success', value: null };
+      case 'initialize':
+        await configure(message.callbacks || null);
+        await reconcilePresentations();
+        await recoverDeadlines();
+        return { status: 'success', value: null };
       case 'claim': return { status: 'success', value: await claim(message.owner, clientId || message.owner) };
       case 'pending': {
         const events = await pending(message.owner, message.token, clientId);
@@ -347,26 +501,42 @@
         const call = message.call;
         if (!call || !call.callId || !call.caller?.id || !call.caller.displayName || !['audio', 'video'].includes(call.media))
           return { status: 'failure', error: { code: 'protocolFailure' } };
+        await reconcilePresentations();
+        if (presentingCalls.has(call.callId)) return { status: 'failure', error: { code: 'invalidState' } };
+        presentingCalls.add(call.callId);
         const snapshot = { callId: call.callId, state: 'ringing', media: call.media, caller: call.caller, actionReceipts: [] };
-        const created = await transaction(['snapshots'], 'readwrite', async tx => {
-          const store = tx.objectStore('snapshots');
-          if (await request(store.get(call.callId))) return false;
-          store.put({ id: call.callId, ...snapshot, sequence: 0 });
-          return true;
-        });
-        if (!created) return { status: 'failure', error: { code: 'invalidState' } };
-        await scope.registration.showNotification(call.caller.displayName, { body: 'Incoming call', tag: call.callId, data: { callId: call.callId }, actions: [{ action: 'answer', title: 'Answer' }, { action: 'reject', title: 'Reject' }] });
-        return { status: 'success', value: snapshot };
+        try {
+          const created = await transaction(['snapshots'], 'readwrite', async tx => {
+            const store = tx.objectStore('snapshots');
+            const current = await request(store.get(call.callId));
+            if (current && (current.state !== 'presentationFailed' || current.caller?.id !== call.caller.id || current.media !== call.media)) return false;
+            store.put({ id: call.callId, ...snapshot, state: 'presenting', sequence: 0 });
+            return true;
+          });
+          if (!created) return { status: 'failure', error: { code: 'invalidState' } };
+          try {
+            await scope.registration.showNotification(call.caller.displayName, { body: 'Incoming call', tag: call.callId, data: { callId: call.callId }, actions: [{ action: 'answer', title: 'Answer' }, { action: 'reject', title: 'Reject' }] });
+            await transaction(['snapshots'], 'readwrite', async tx => {
+              const store = tx.objectStore('snapshots');
+              const current = await request(store.get(call.callId));
+              if (current?.state === 'presenting') store.put({ ...current, state: 'ringing' });
+            });
+          } catch (_) {
+            await transaction(['snapshots'], 'readwrite', async tx => {
+              const store = tx.objectStore('snapshots');
+              const current = await request(store.get(call.callId));
+              if (current?.state === 'presenting') store.put({ ...current, state: 'presentationFailed' });
+            });
+            return { status: 'failure', error: { code: 'platformFailure' } };
+          }
+          return { status: 'success', value: snapshot };
+        } finally { presentingCalls.delete(call.callId); }
       }
       case 'end': {
-        const snapshot = await transaction(['snapshots'], 'readwrite', async tx => {
-          const store = tx.objectStore('snapshots');
-          const current = await request(store.get(message.callId));
-          if (!current) return null;
-          const next = { ...current, state: 'ended' };
-          store.put(next);
-          return next;
-        });
+        const reason = message.reason || 'local';
+        if (!['local', 'remote', 'rejected', 'missed', 'failed'].includes(reason))
+          return { status: 'failure', error: { code: 'protocolFailure' } };
+        const snapshot = await terminalize(message.callId, reason);
         if (!snapshot) return { status: 'failure', error: { code: 'invalidState' } };
         return { status: 'success', value: snapshot };
       }
@@ -379,7 +549,7 @@
           const current = await request(store.get(receipt.callId));
           if (!current) return null;
           if (receipt.completed) return current;
-          if (Date.now() > receipt.deadline || current.state !== 'connecting' || current.actionId !== message.actionId) return null;
+          if (receipt.expired || Date.now() > receipt.deadline || current.state !== 'connecting' || current.actionId !== message.actionId) return null;
           const next = { ...current, state: message.succeeded ? 'active' : 'ended', actionId: message.actionId,
             actionReceipts: [...(current.actionReceipts || []), { actionId: message.actionId, succeeded: message.succeeded }] };
           store.put(next);
@@ -396,11 +566,13 @@
     settings = { leaseMs: options.leaseMs || 45000, heartbeatMs: options.heartbeatMs || 15000 };
     scope.addEventListener('push', event => event.waitUntil(push(event)));
     scope.addEventListener('notificationclick', event => event.waitUntil(click(event)));
-    const onOutboxSync = event => {
+    scope.addEventListener('activate', event => event.waitUntil(Promise.all([reconcilePresentations(), recoverDeadlines()])));
+    const onBackgroundSync = event => {
       if (event.tag === 'jackfield-outbox') event.waitUntil(safeDrain());
+      if (event.tag === 'jackfield-deadline') event.waitUntil(recoverDeadlines());
     };
-    scope.addEventListener('sync', onOutboxSync);
-    scope.addEventListener('periodicsync', onOutboxSync);
+    scope.addEventListener('sync', onBackgroundSync);
+    scope.addEventListener('periodicsync', onBackgroundSync);
     scope.addEventListener('message', event => {
       if (!event.data || event.data.jackfield !== 1 || !event.ports?.[0]) return;
       event.waitUntil(command(event.data, event.source?.id).then(result => event.ports[0].postMessage({ version: 1, ...result }))

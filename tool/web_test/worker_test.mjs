@@ -6,12 +6,12 @@ import { indexedDB as fakeIndexedDB } from 'fake-indexeddb';
 
 const source = await readFile(new URL('../../web/jackfield_worker.js', import.meta.url), 'utf8').catch(() => '');
 
-function harness() {
+function harness(databaseName = `jackfield-test-${crypto.randomUUID()}`) {
   const listeners = new Map();
   const notifications = [];
   const clients = [];
   const scope = {
-    JackfieldDatabaseName: `jackfield-test-${crypto.randomUUID()}`,
+    JackfieldDatabaseName: databaseName,
     indexedDB: fakeIndexedDB,
     crypto: globalThis.crypto,
     URL,
@@ -302,6 +302,194 @@ test('reportIncoming cannot revive an ended call', async () => {
   assert.equal(again.status, 'failure');
   assert.equal((await records(h.scope.JackfieldDatabaseName, 'snapshots'))[0].state, 'ended');
   assert.equal(h.notifications.length, 1);
+});
+
+test('end persists one ordered event, closes visible UI, and keeps action receipt independent', async () => {
+  const h = harness();
+  h.scope.JackfieldWorker.install();
+  const closed = [];
+  h.scope.registration.getNotifications = async () => [
+    ...(!closed.includes('call-1') ? [{ tag: 'call-1', close: () => closed.push('call-1') }] : []),
+    { tag: 'call-2', close: () => closed.push('call-2') },
+  ];
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
+  const before = (await records(h.scope.JackfieldDatabaseName, 'inbox')).filter(item => item.event);
+  assert.equal(before.length, 1);
+  const first = await h.scope.JackfieldWorker.command({ version: 1, command: 'end', callId: 'call-1', reason: 'remote' });
+  const second = await h.scope.JackfieldWorker.command({ version: 1, command: 'end', callId: 'call-1', reason: 'remote' });
+  const events = (await records(h.scope.JackfieldDatabaseName, 'inbox')).filter(item => item.event)
+    .map(item => item.event).sort((a, b) => a.sequence - b.sequence);
+  assert.equal(first.status, 'success');
+  assert.equal(second.status, 'success');
+  assert.equal(first.value.state, 'ended');
+  assert.deepEqual(events.map(event => [event.type, event.sequence]), [['answer_requested', 1], ['ended', 2]]);
+  assert.equal(events[1].reason, 'remote');
+  assert.equal(new Set(events.map(event => event.eventId)).size, 2);
+  assert.deepEqual(closed, ['call-1']);
+  assert.equal((await records(h.scope.JackfieldDatabaseName, 'receipts'))[0].completed, false);
+});
+
+test('endpoint rotation wakes auth-paused callbacks and an old 401 cannot pause the new endpoint', async () => {
+  const h = harness();
+  h.scope.JackfieldWorker.install();
+  const oldConfig = { endpoint: 'https://old.example.test/events', auth: { type: 'bearer', token: 'same-token' }, timeToLiveMs: 60000, maxPendingEvents: 10 };
+  const newConfig = { ...oldConfig, endpoint: 'https://new.example.test/events' };
+  let releaseOld;
+  const requests = [];
+  h.scope.fetch = async (url) => {
+    requests.push(url);
+    if (url === oldConfig.endpoint) return new Promise(resolve => { releaseOld = () => resolve({ status: 401, headers: { get: () => null } }); });
+    return { status: 204, headers: { get: () => null } };
+  };
+  await h.scope.JackfieldWorker.configure(oldConfig);
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  const click = dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
+  while (!releaseOld) await new Promise(resolve => setTimeout(resolve, 1));
+  await h.scope.JackfieldWorker.configure(newConfig);
+  releaseOld();
+  await click;
+  assert.equal((await h.scope.JackfieldWorker.command({ version: 1, command: 'diagnostics' })).value.authPaused, false);
+  await h.scope.JackfieldWorker.drainOutbox();
+  assert.deepEqual(requests, [oldConfig.endpoint, newConfig.endpoint]);
+  const receipt = (await records(h.scope.JackfieldDatabaseName, 'outbox'))[0];
+  assert.equal(receipt.state, 'delivered');
+  assert.equal(receipt.httpStatus, 204);
+});
+
+test('endpoint-only config rotation resumes a previously paused callback', async () => {
+  const h = harness();
+  h.scope.JackfieldWorker.install();
+  const oldConfig = { endpoint: 'https://old.example.test/events', auth: { type: 'bearer', token: 'same-token' }, timeToLiveMs: 60000, maxPendingEvents: 10 };
+  const requests = [];
+  h.scope.fetch = async url => {
+    requests.push(url);
+    return { status: url === oldConfig.endpoint ? 403 : 204, headers: { get: () => null } };
+  };
+  await h.scope.JackfieldWorker.configure(oldConfig);
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
+  assert.equal((await h.scope.JackfieldWorker.command({ version: 1, command: 'diagnostics' })).value.authPaused, true);
+  await h.scope.JackfieldWorker.configure({ ...oldConfig, endpoint: 'https://new.example.test/events' });
+  assert.equal((await h.scope.JackfieldWorker.command({ version: 1, command: 'diagnostics' })).value.authPaused, false);
+  await h.scope.JackfieldWorker.drainOutbox();
+  assert.deepEqual(requests, [oldConfig.endpoint, 'https://new.example.test/events']);
+  assert.equal((await records(h.scope.JackfieldDatabaseName, 'outbox'))[0].state, 'delivered');
+});
+
+test('a callback rotated away and back cannot inherit a stale in-flight 401', async () => {
+  const h = harness();
+  h.scope.JackfieldWorker.install();
+  const original = { endpoint: 'https://old.example.test/events', auth: { type: 'bearer', token: 'token' }, timeToLiveMs: 60000, maxPendingEvents: 10 };
+  let releaseOld;
+  let requests = 0;
+  h.scope.fetch = async () => {
+    requests++;
+    if (requests === 1) return new Promise(resolve => { releaseOld = () => resolve({ status: 401, headers: { get: () => null } }); });
+    return { status: 204, headers: { get: () => null } };
+  };
+  await h.scope.JackfieldWorker.configure(original);
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  const click = dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
+  while (!releaseOld) await new Promise(resolve => setTimeout(resolve, 1));
+  await h.scope.JackfieldWorker.configure({ ...original, endpoint: 'https://other.example.test/events' });
+  await h.scope.JackfieldWorker.configure(original);
+  releaseOld();
+  await click;
+  await h.scope.JackfieldWorker.drainOutbox();
+  assert.equal(requests, 2);
+  assert.equal((await h.scope.JackfieldWorker.command({ version: 1, command: 'diagnostics' })).value.authPaused, false);
+  assert.equal((await records(h.scope.JackfieldDatabaseName, 'outbox'))[0].state, 'delivered');
+});
+
+test('expired answer is terminalized after worker restart and repeated completion fails with deadlineExceeded', async () => {
+  const h = harness();
+  h.scope.JackfieldWorker.install();
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  const ids = ['action-id', 'z-answer-event'];
+  h.scope.crypto = { randomUUID: () => ids.shift() || crypto.randomUUID() };
+  await dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
+  const receipt = (await records(h.scope.JackfieldDatabaseName, 'receipts'))[0];
+  await updateRecord(h.scope.JackfieldDatabaseName, 'receipts', receipt.id, current => ({ ...current, deadline: Date.now() - 1 }));
+  const restarted = harness(h.scope.JackfieldDatabaseName);
+  restarted.scope.crypto = { randomUUID: () => 'a-ended-event' };
+  const closed = [];
+  restarted.scope.registration.getNotifications = async () => [{ tag: 'call-1', close: () => closed.push('call-1') }];
+  restarted.scope.JackfieldWorker.install();
+  await restarted.scope.JackfieldWorker.command({ version: 1, command: 'initialize' });
+  assert.equal((await records(h.scope.JackfieldDatabaseName, 'snapshots'))[0].state, 'failed');
+  const events = (await records(h.scope.JackfieldDatabaseName, 'inbox')).filter(item => item.event)
+    .map(item => item.event).sort((a, b) => a.sequence - b.sequence);
+  assert.deepEqual(events.map(event => [event.type, event.sequence]), [['answer_requested', 1], ['ended', 2]]);
+  assert.equal(events[1].reason, 'failed');
+  const replay = await restarted.scope.JackfieldWorker.claim('tab');
+  assert.deepEqual(replay.pending.map(event => event.sequence), [1, 2]);
+  assert.deepEqual(closed, ['call-1']);
+  await restarted.scope.JackfieldWorker.command({ version: 1, command: 'initialize' });
+  assert.deepEqual(closed, ['call-1']);
+  assert.equal((await records(h.scope.JackfieldDatabaseName, 'receipts'))[0].expired, true);
+  for (let i = 0; i < 2; i++) {
+    const completion = await restarted.scope.JackfieldWorker.command({ version: 1, command: 'completeAction', actionId: receipt.id, succeeded: true });
+    assert.equal(completion.error.code, 'deadlineExceeded');
+  }
+  assert.equal((await records(h.scope.JackfieldDatabaseName, 'inbox')).filter(item => item.event).length, 2);
+});
+
+test('failed notification presentation is retryable with the same callId', async () => {
+  const h = harness();
+  h.scope.JackfieldWorker.install();
+  let attempts = 0;
+  h.scope.registration.showNotification = async () => {
+    attempts++;
+    if (attempts === 1) throw new Error('permission revoked');
+  };
+  const message = { version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } };
+  const failed = await h.scope.JackfieldWorker.command(message);
+  assert.equal(failed.error.code, 'platformFailure');
+  assert.equal((await records(h.scope.JackfieldDatabaseName, 'snapshots'))[0].state, 'presentationFailed');
+  const recovered = await h.scope.JackfieldWorker.command(message);
+  assert.equal(recovered.status, 'success');
+  assert.equal(recovered.value.state, 'ringing');
+  assert.equal(attempts, 2);
+  assert.equal((await records(h.scope.JackfieldDatabaseName, 'inbox')).filter(item => item.event).length, 0);
+});
+
+test('a push whose notification fails can retry the same invitation without reviving a terminal call', async () => {
+  const h = harness();
+  h.scope.JackfieldWorker.install();
+  await bind(h);
+  let attempts = 0;
+  h.scope.registration.showNotification = async () => {
+    attempts++;
+    if (attempts === 1) throw new Error('notification unavailable');
+  };
+  await assert.rejects(pushCall(h));
+  assert.equal((await records(h.scope.JackfieldDatabaseName, 'snapshots'))[0].state, 'presentationFailed');
+  await pushCall(h);
+  assert.equal((await records(h.scope.JackfieldDatabaseName, 'snapshots'))[0].state, 'ringing');
+  assert.equal(attempts, 2);
+  assert.equal((await records(h.scope.JackfieldDatabaseName, 'inbox')).length, 1);
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'end', callId: 'call-1' });
+  await pushCall(h);
+  assert.equal(attempts, 2);
+});
+
+test('worker restart reconciles an interrupted presentation before retrying its callId', async () => {
+  const first = harness();
+  first.scope.JackfieldWorker.install();
+  await first.scope.JackfieldWorker.claim('setup');
+  first.scope.registration.showNotification = () => new Promise(() => {});
+  const message = { version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } };
+  void first.scope.JackfieldWorker.command(message);
+  while ((await records(first.scope.JackfieldDatabaseName, 'snapshots'))[0]?.state !== 'presenting')
+    await new Promise(resolve => setTimeout(resolve, 1));
+  const restarted = harness(first.scope.JackfieldDatabaseName);
+  restarted.scope.JackfieldWorker.install();
+  restarted.scope.registration.getNotifications = async () => [];
+  await restarted.scope.JackfieldWorker.command({ version: 1, command: 'initialize' });
+  assert.equal((await records(first.scope.JackfieldDatabaseName, 'snapshots'))[0].state, 'presentationFailed');
+  assert.equal((await restarted.scope.JackfieldWorker.command(message)).status, 'success');
+  assert.equal((await records(first.scope.JackfieldDatabaseName, 'snapshots'))[0].state, 'ringing');
 });
 
 test('bridge refuses an unrelated worker registration', async () => {
