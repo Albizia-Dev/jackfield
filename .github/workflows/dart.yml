@@ -1,0 +1,19 @@
+name: Dart API and contracts
+on: [push, pull_request]
+permissions:
+  contents: read
+concurrency:
+  group: dart-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  dart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.8'
+          channel: stable
+          cache: true
+      - run: tool/verify.sh dart

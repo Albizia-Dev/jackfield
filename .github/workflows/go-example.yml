@@ -1,0 +1,18 @@
+name: Go manual stand
+on: [push, pull_request]
+permissions:
+  contents: read
+concurrency:
+  group: go-example-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server_example/go.mod
+          cache-dependency-path: server_example/go.sum
+      - run: tool/verify.sh go

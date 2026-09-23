@@ -11,4 +11,4 @@
 | Windows | Task 11 отложен: только scaffold | Нет подтверждённого рабочего adapter contract | Не реализовано и не проверено |
 | Linux | Task 12 отложен: только scaffold | Нет подтверждённого рабочего adapter contract | Не реализовано и не проверено |
 
-При отказе разрешений или хранилища адаптер сообщает `unavailable` либо типизированный отказ команды. Android `nativeCallUi` означает self-managed Telecom, а не экран стандартной телефонной программы. Web Notification не является системным call UI. Проверки исходников/симулятора не заменяют [ручную матрицу](validation-matrix.md).
+При отказе разрешений или хранилища адаптер сообщает `unavailable` либо типизированный отказ команды. Android `nativeCallUi` означает self-managed Telecom, а не экран стандартной телефонной программы. Web Notification не является системным call UI. [CI](ci.md) проверяет только реализованные адаптеры; Windows/Linux workflows проверяют scaffold и этот статус incomplete. Проверки исходников/симулятора не заменяют [ручную матрицу](validation-matrix.md).
