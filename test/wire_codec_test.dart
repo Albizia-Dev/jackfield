@@ -35,6 +35,16 @@ void main() {
     );
   });
 
+  test('fractional wire version is rejected safely', () {
+    expect(
+      () => WireCodec.decodeEvent({
+        ...jsonFixture('event_ended_v1.json'),
+        'version': 1.0,
+      }),
+      throwsA(isA<JackfieldProtocolException>()),
+    );
+  });
+
   test('malformed envelope is rejected safely', () {
     expect(
       () => WireCodec.decodeEvent({

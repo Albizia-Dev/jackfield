@@ -31,7 +31,7 @@ abstract final class WireCodec {
       }
       data[entry.key as String] = entry.value;
     }
-    if (data['version'] != version) {
+    if (data['version'] is! int || data['version'] != version) {
       throw const JackfieldProtocolException('Unsupported event version');
     }
     final type = data['type'];
