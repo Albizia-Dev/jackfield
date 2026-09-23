@@ -81,8 +81,10 @@ Snapshot содержит обязательные `callId`, `state`, `media`, `
 null, если значение неизвестно. Карта разрешений в Dart неизменяема.
 
 У этих двух запросов нет result-обёртки: повреждённый ответ вызывает
-`JackfieldProtocolException`, транспортный `PlatformException` распространяется
-как исключение. Отсутствующий адаптер сообщает unavailable/unsupported и
+`JackfieldProtocolException`, транспортный `PlatformException` преобразуется в
+`JackfieldTransportException.platformFailure()` с безопасной категорией.
+Исходные native code/message/details/stacktrace не сохраняются.
+Отсутствующий адаптер сообщает unavailable/unsupported и
 неизвестные размеры очередей, не симулируя рабочую платформу.
 
 ## Потоки и независимые подтверждения
@@ -98,6 +100,15 @@ Call events используют уже утверждённые fixtures
 `removed: true` удаляет указанный токен. Для совмещения snapshot и updates
 приложение сначала подписывается на updates. Повреждённый payload становится
 ошибкой потока; последующие корректные сообщения продолжают доставляться.
+
+Native error envelopes и ошибки подключения потока преобразуются в
+`JackfieldTransportException` без исходных code/message/details/stacktrace;
+отсутствующий stream handler даёт категорию `unsupported`, остальные transport
+сбои — `platformFailure`. Ошибка listen доставляется подписчику, если он ещё
+подписан. Ошибка cancel после ухода последнего подписчика попадает в FlutterError
+только как безопасное typed exception с пустым stack trace. Такая же безопасная
+диагностика используется, если отложенный listen завершился ошибкой уже после
+ухода подписчика. Ошибки не подтверждают события и не закрывают поток.
 
 `completeAction` подтверждает результат работы приложения по `actionId`.
 `acknowledgeEvents` подтверждает только Flutter delivery по `eventId`.

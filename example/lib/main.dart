@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:jackfield/jackfield.dart';
 
 void main() {
@@ -28,7 +27,7 @@ class _MyAppState extends State<MyApp> {
     try {
       final capabilities = await _jackfieldPlugin.capabilities();
       adapter = '${capabilities.platform} / ${capabilities.mechanism.name}';
-    } on PlatformException {
+    } on JackfieldTransportException {
       adapter = 'Unavailable';
     } on JackfieldProtocolException {
       adapter = 'Invalid adapter response';

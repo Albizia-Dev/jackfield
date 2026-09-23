@@ -43,6 +43,27 @@ final class JackfieldError {
   final String? nativeCode;
 }
 
+/// A sanitized channel failure for APIs that cannot return a result wrapper.
+///
+/// Queries and event streams use this exception instead of exposing native
+/// exception codes, messages, details, or stack traces. Command methods return
+/// [JackfieldFailure] with the equivalent category instead.
+final class JackfieldTransportException implements Exception {
+  /// Reports a failed native transport operation without its raw payload.
+  const JackfieldTransportException.platformFailure()
+    : code = JackfieldErrorCode.platformFailure;
+
+  /// Reports that the stream's native handler is unavailable.
+  const JackfieldTransportException.unsupported()
+    : code = JackfieldErrorCode.unsupported;
+
+  /// The stable failure category, safe for application decisions and logs.
+  final JackfieldErrorCode code;
+
+  @override
+  String toString() => 'JackfieldTransportException: ${code.name}';
+}
+
 /// A typed operation outcome.
 sealed class JackfieldResult<T> {
   /// Creates an outcome subtype.

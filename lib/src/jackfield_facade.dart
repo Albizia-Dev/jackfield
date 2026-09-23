@@ -12,6 +12,9 @@ import 'platform/jackfield_platform.dart';
 /// The application owns signaling and media. Expected command failures are
 /// returned as [JackfieldFailure]; malformed diagnostic/capability responses
 /// throw protocol exceptions. Stream protocol failures are stream errors.
+/// Query and stream transport failures use [JackfieldTransportException] without
+/// native exception payloads. Stream cancellation failures are reported through
+/// FlutterError with the same safe exception when no listener remains.
 abstract class Jackfield {
   /// Creates an independently injected facade without changing registration.
   factory Jackfield.withPlatform(JackfieldPlatform platform) = _Jackfield;

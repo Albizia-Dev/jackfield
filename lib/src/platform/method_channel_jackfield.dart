@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../api/call_models.dart';
@@ -15,6 +18,8 @@ import 'wire_codec.dart';
 /// Commands return typed transport/protocol failures. Capability/diagnostic
 /// protocol failures throw [JackfieldProtocolException]. Invalid stream messages
 /// are stream errors and do not acknowledge events or close the subscription.
+/// Transport failures use [JackfieldTransportException]. A cancellation failure
+/// after the last listener leaves is reported to FlutterError in sanitized form.
 class MethodChannelJackfield extends JackfieldPlatform {
   /// Creates the adapter for Jackfield's registered native channels.
   MethodChannelJackfield();
@@ -22,12 +27,14 @@ class MethodChannelJackfield extends JackfieldPlatform {
   static const _eventsChannel = EventChannel('jackfield/events');
   static const _tokensChannel = EventChannel('jackfield/push_token_updates');
 
-  late final Stream<JackfieldEvent> _events = _eventsChannel
-      .receiveBroadcastStream(WireCodec.encodeQuery())
-      .map(WireCodec.decodeEvent);
-  late final Stream<PushTokenUpdate> _tokens = _tokensChannel
-      .receiveBroadcastStream(WireCodec.encodeQuery())
-      .map(WireCodec.decodePushTokenUpdate);
+  late final Stream<JackfieldEvent> _events = _receiveSafeBroadcastStream(
+    _eventsChannel,
+    WireCodec.decodeEvent,
+  );
+  late final Stream<PushTokenUpdate> _tokens = _receiveSafeBroadcastStream(
+    _tokensChannel,
+    WireCodec.decodePushTokenUpdate,
+  );
 
   @override
   Future<JackfieldResult<void>> initialize(
@@ -105,6 +112,8 @@ class MethodChannelJackfield extends JackfieldPlatform {
       );
     } on MissingPluginException {
       return super.capabilities();
+    } on PlatformException {
+      throw const JackfieldTransportException.platformFailure();
     }
   }
 
@@ -119,6 +128,8 @@ class MethodChannelJackfield extends JackfieldPlatform {
       );
     } on MissingPluginException {
       return super.diagnostics();
+    } on PlatformException {
+      throw const JackfieldTransportException.platformFailure();
     }
   }
 
@@ -159,4 +170,86 @@ class MethodChannelJackfield extends JackfieldPlatform {
       );
     }
   }
+}
+
+// EventChannel.receiveBroadcastStream reports raw listen/cancel exceptions to
+// FlutterError before a stream transformer can sanitize them. Own that boundary
+// here while retaining the native EventChannel wire protocol and broadcast life.
+Stream<T> _receiveSafeBroadcastStream<T>(
+  EventChannel channel,
+  T Function(Object?) decode,
+) {
+  final messenger = channel.binaryMessenger;
+  final control = MethodChannel(channel.name, channel.codec, messenger);
+  late StreamController<T> controller;
+
+  void reportTransportFailure(Object error, {required bool cancelling}) {
+    final safe = error is MissingPluginException
+        ? const JackfieldTransportException.unsupported()
+        : const JackfieldTransportException.platformFailure();
+    if (!cancelling && controller.hasListener && !controller.isClosed) {
+      controller.addError(safe, StackTrace.empty);
+    } else {
+      // There may be no subscriber left to receive cancellation errors.
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: safe,
+          stack: StackTrace.empty,
+          library: 'jackfield',
+          context: ErrorDescription(
+            'while changing a Jackfield stream subscription',
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<void> changeSubscription(String method) async {
+    try {
+      await control.invokeMethod<void>(method, WireCodec.encodeQuery());
+    } catch (error) {
+      reportTransportFailure(error, cancelling: method == 'cancel');
+    }
+  }
+
+  controller = StreamController<T>.broadcast(
+    onListen: () {
+      try {
+        messenger.setMessageHandler(channel.name, (reply) async {
+          if (reply == null) {
+            await controller.close();
+            return null;
+          }
+          try {
+            controller.add(decode(channel.codec.decodeEnvelope(reply)));
+          } on PlatformException {
+            controller.addError(
+              const JackfieldTransportException.platformFailure(),
+              StackTrace.empty,
+            );
+          } on JackfieldProtocolException catch (error) {
+            controller.addError(error, StackTrace.empty);
+          } catch (_) {
+            controller.addError(
+              const JackfieldProtocolException('Invalid transport envelope'),
+              StackTrace.empty,
+            );
+          }
+          return null;
+        });
+        unawaited(changeSubscription('listen'));
+      } catch (error) {
+        reportTransportFailure(error, cancelling: false);
+      }
+    },
+    onCancel: () {
+      try {
+        messenger.setMessageHandler(channel.name, null);
+        unawaited(changeSubscription('cancel'));
+      } catch (error) {
+        reportTransportFailure(error, cancelling: true);
+      }
+    },
+  );
+  return controller.stream;
 }
