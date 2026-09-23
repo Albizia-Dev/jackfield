@@ -9,15 +9,22 @@ final class DiagnosticErrorStateTests: XCTestCase {
     XCTAssertEqual(state.visibleError(activeCapacityDrops: 1), "platformFailure")
   }
 
-  func testFlutterAckClearsStaleStorageErrorButKeepsLaterError() {
+  func testFullHTTPQueueKeepsAdmissionStorageError() {
     var state = DiagnosticErrorState()
     state.record("storageFull")
-    state.acknowledgeFlutter()
+    state.reconcileCapacity(isAtCapacity: true)
+    XCTAssertEqual(state.visibleError(activeCapacityDrops: 0), "storageFull")
+  }
+
+  func testCapacityReleaseClearsStorageErrorButKeepsLaterError() {
+    var state = DiagnosticErrorState()
+    state.record("storageFull")
+    state.reconcileCapacity(isAtCapacity: false)
     XCTAssertNil(state.visibleError(activeCapacityDrops: 0))
 
     state.record("storageFull")
     state.record("deadlineExceeded")
-    state.acknowledgeFlutter()
+    state.reconcileCapacity(isAtCapacity: false)
     XCTAssertEqual(state.visibleError(activeCapacityDrops: 0), "deadlineExceeded")
     XCTAssertEqual(state.visibleError(activeCapacityDrops: 1), "deadlineExceeded")
   }

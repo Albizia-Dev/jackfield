@@ -256,6 +256,25 @@ public actor EventStore {
   public func pendingHTTPCount() throws -> Int { try count("http_state='pending'") }
   public func pendingFlutterCount() throws -> Int { try count("flutter_ack=0") }
   public func httpCapacityDroppedCount() throws -> Int { try count("http_state='capacity_dropped'") }
+  public func isHTTPAtCapacity() throws -> Bool {
+    guard try setting("http_enabled") == "1",
+          let text = try setting("http_limit"), let limit = Int(text) else { return false }
+    return try pendingHTTPCount() >= limit
+  }
+  public func withPendingHTTPDispatch(eventId: String, _ submit: () throws -> Void) throws -> Bool {
+    try transaction {
+      guard try setting("http_enabled") == "1", try !httpPausedForAuthentication() else { return false }
+      let stmt = try statement("SELECT 1 FROM events e WHERE e.event_id=? AND e.http_state='pending' AND e.next_at<=? AND NOT EXISTS (SELECT 1 FROM events prior WHERE prior.call_id=e.call_id AND prior.sequence<e.sequence AND prior.http_state='pending')")
+      defer { sqlite3_finalize(stmt) }
+      bind(eventId, 1, to: stmt)
+      sqlite3_bind_double(stmt, 2, Date().timeIntervalSince1970)
+      let status = sqlite3_step(stmt)
+      if status == SQLITE_DONE { return false }
+      guard status == SQLITE_ROW else { throw JackfieldCoreError.platformFailure }
+      try submit()
+      return true
+    }
+  }
   private func count(_ clause: String) throws -> Int {
     let stmt = try statement("SELECT COUNT(*) FROM events WHERE \(clause)"); defer { sqlite3_finalize(stmt) }
     guard sqlite3_step(stmt) == SQLITE_ROW else { throw JackfieldCoreError.platformFailure }
@@ -327,7 +346,7 @@ public actor EventStore {
       try run("DELETE FROM settings WHERE key='rejected_fingerprint'", [])
     }
   }
-  public func markHTTPTerminal(_ id: String) throws { try run("UPDATE events SET http_state='terminal' WHERE event_id=?", [id]) }
+  public func markHTTPTerminal(_ id: String) throws { try run("UPDATE events SET http_state='terminal' WHERE event_id=? AND http_state='pending'", [id]) }
   public func scheduleHTTP(_ id: String, at date: Date) throws {
     let stmt = try statement("UPDATE events SET attempts=attempts+1,next_at=? WHERE event_id=?")
     defer { sqlite3_finalize(stmt) }

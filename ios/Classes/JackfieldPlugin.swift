@@ -99,7 +99,6 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
         case "acknowledgeEvents":
           guard let ids = data["eventIds"] as? [String], ids.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else { throw JackfieldCoreError.protocolFailure }
           try await store.acknowledgeFlutter(Set(ids))
-          if !ids.isEmpty { self.diagnosticError.acknowledgeFlutter() }
           result(Self.success(NSNull()))
         case "pushTokens":
           result(Self.success(["tokens": self.pushToken.map { [["provider": "apns", "value": $0]] } ?? []]))
@@ -159,6 +158,7 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
   }
   private func diagnostics(_ store: EventStore) async throws -> [String: Any] {
     let dropped = try await store.httpCapacityDroppedCount()
+    diagnosticError.reconcileCapacity(isAtCapacity: try await store.isHTTPAtCapacity())
     let error = diagnosticError.visibleError(activeCapacityDrops: dropped)
     return ["version": 1, "mechanism": "nativeCallUi", "permissions": ["voipPush": "unknown"],
      "pendingFlutterEvents": try await store.pendingFlutterCount(), "pendingHttpEvents": try await store.pendingHTTPCount(),

@@ -206,11 +206,13 @@ private final class JackfieldHTTPDispatcher: NSObject, URLSessionTaskDelegate {
       guard var request = try? event.callbackRequest(to: endpoint, token: token),
             let body = request.httpBody else { continue }
       let file = Self.bodyFile(for: event.eventId)
-      do { try body.write(to: file, options: .atomic) } catch { continue }
       request.httpBody = nil
-      let task = session.uploadTask(with: request, fromFile: file)
-      task.taskDescription = JackfieldTaskMetadata(eventId: event.eventId, credentialFingerprint: fingerprint).description
-      task.resume()
+      _ = try? await store.withPendingHTTPDispatch(eventId: event.eventId) {
+        try body.write(to: file, options: .atomic)
+        let task = session.uploadTask(with: request, fromFile: file)
+        task.taskDescription = JackfieldTaskMetadata(eventId: event.eventId, credentialFingerprint: fingerprint).description
+        task.resume()
+      }
     }
   }
 

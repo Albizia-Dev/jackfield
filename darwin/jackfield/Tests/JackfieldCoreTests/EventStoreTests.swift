@@ -307,4 +307,130 @@ final class EventStoreTests: XCTestCase {
     XCTAssertEqual(pending.map(\.eventId), ["event-1"])
     XCTAssertEqual(retainedEvent.map(\.eventId), ["event-2"])
   }
+
+  func testUnknownFlutterAckDoesNotFreeHTTPAdmissionCapacity() async throws {
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let store = try EventStore(path: path)
+    try await store.configureHTTP(limit: 1)
+    let occupying = try WireEnvelope.ended(callId: "call-1", eventId: "event-1", sequence: 0,
+                                            occurredAt: Date(timeIntervalSince1970: 100), reason: "remote")
+    try await store.append(occupying)
+    try await store.acknowledgeFlutter(["unknown-event"])
+    let stillFull = try await store.isHTTPAtCapacity()
+    XCTAssertTrue(stillFull)
+    try await store.save(snapshot: CallRecord(callId: "call-2", state: "ringing", media: "audio"))
+    _ = try await store.saveEnded(callId: "call-2", eventId: "event-2", reason: "remote", at: Date())
+    try await store.acknowledgeFlutter(["unknown-event", "event-1"])
+    let droppedAfterUnrelatedACK = try await store.httpCapacityDroppedCount()
+    XCTAssertEqual(droppedAfterUnrelatedACK, 1)
+    try await store.acknowledgeHTTP(["event-1"])
+    let afterDelivery = try await store.isHTTPAtCapacity()
+    XCTAssertFalse(afterDelivery)
+  }
+
+  func testCachedCandidateDroppedDuringInventoryWaitCannotStartHTTPTask() async throws {
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let store = try EventStore(path: path)
+    try await store.configureHTTP(limit: 2)
+    for index in 1...2 {
+      let event = try WireEnvelope.ended(callId: "call-\(index)", eventId: "event-\(index)", sequence: 0,
+                                         occurredAt: Date(timeIntervalSince1970: Double(100 + index)), reason: "remote")
+      try await store.append(event)
+    }
+    let cached = try await store.readyHTTP(at: Date(timeIntervalSince1970: 200))
+    XCTAssertEqual(cached.map(\.eventId), ["event-1", "event-2"])
+    let inventoryReached = expectation(description: "dispatcher is waiting for URLSession task inventory")
+    let gate = HTTPInventoryGate()
+    let submissions = HTTPSubmissionRecorder()
+    let dispatch = Task {
+      inventoryReached.fulfill()
+      await gate.wait()
+      return try await store.withPendingHTTPDispatch(eventId: cached[1].eventId) {
+        submissions.record(cached[1].eventId)
+      }
+    }
+    await fulfillment(of: [inventoryReached], timeout: 2)
+    try await store.configureHTTP(limit: 1)
+    await gate.open()
+    let submitted = try await dispatch.value
+    XCTAssertFalse(submitted)
+    XCTAssertTrue(submissions.ids.isEmpty)
+    let retainedSubmitted = try await store.withPendingHTTPDispatch(eventId: "event-1") {
+      submissions.record("event-1")
+    }
+    XCTAssertTrue(retainedSubmitted)
+    XCTAssertEqual(submissions.ids, ["event-1"])
+    let pending = try await store.pendingHTTP()
+    let flutter = try await store.pendingFlutter()
+    XCTAssertEqual(pending.map(\.eventId), ["event-1"])
+    XCTAssertEqual(flutter.map(\.eventId), ["event-1", "event-2"])
+  }
+
+  func testStaleExpiryCannotEraseCapacityDropDiagnostic() async throws {
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let store = try EventStore(path: path)
+    try await store.configureHTTP(limit: 2)
+    for index in 1...2 {
+      let event = try WireEnvelope.ended(callId: "call-\(index)", eventId: "event-\(index)", sequence: 0,
+                                         occurredAt: Date(timeIntervalSince1970: Double(100 + index)), reason: "remote")
+      try await store.append(event)
+    }
+    try await store.configureHTTP(limit: 1)
+    try await store.markHTTPTerminal("event-2")
+    let drops = try await store.httpCapacityDroppedCount()
+    XCTAssertEqual(drops, 1)
+  }
+
+  func testFailedDispatchPreparationKeepsHTTPEventPending() async throws {
+    enum PreparationFailure: Error { case unavailable }
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let store = try EventStore(path: path)
+    try await store.configureHTTP(limit: 1)
+    let event = try WireEnvelope.ended(callId: "call-1", eventId: "event-1", sequence: 0,
+                                       occurredAt: Date(timeIntervalSince1970: 100), reason: "remote")
+    try await store.append(event)
+    do {
+      _ = try await store.withPendingHTTPDispatch(eventId: "event-1") {
+        throw PreparationFailure.unavailable
+      }
+      XCTFail("Failed upload preparation must propagate")
+    } catch PreparationFailure.unavailable { }
+    let pending = try await store.pendingHTTP()
+    XCTAssertEqual(pending.map(\.eventId), ["event-1"])
+  }
+}
+
+private actor HTTPInventoryGate {
+  private var opened = false
+  private var continuation: CheckedContinuation<Void, Never>?
+
+  func wait() async {
+    if opened { return }
+    await withCheckedContinuation { continuation = $0 }
+  }
+
+  func open() {
+    opened = true
+    continuation?.resume()
+    continuation = nil
+  }
+}
+
+private final class HTTPSubmissionRecorder {
+  private let lock = NSLock()
+  private var submitted: [String] = []
+
+  func record(_ id: String) {
+    lock.lock(); defer { lock.unlock() }
+    submitted.append(id)
+  }
+
+  var ids: [String] {
+    lock.lock(); defer { lock.unlock() }
+    return submitted
+  }
 }
