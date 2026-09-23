@@ -72,13 +72,7 @@ final class MacOSCallbackRuntime {
       Task { await sendReady() }
     }
     guard let store else { return }
-    var request = URLRequest(url: endpoint)
-    request.httpMethod = "POST"
-    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-    request.setValue(event.eventId, forHTTPHeaderField: "Idempotency-Key")
-    guard let body = try? JSONSerialization.data(withJSONObject: ["version": 1, "event": event.toWire()]) else { return }
-    request.httpBody = body
+    guard let request = try? event.callbackRequest(to: endpoint, token: token) else { return }
     let (status, retryAfter) = await withCheckedContinuation { (continuation: CheckedContinuation<(Int, TimeInterval?), Never>) in
       session.dataTask(with: request) { _, response, error in
         let http = response as? HTTPURLResponse

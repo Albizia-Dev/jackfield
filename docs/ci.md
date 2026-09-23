@@ -18,6 +18,14 @@ Firebase, APNs, Web Push или реальные callback credentials.
 | `linux.yml` | `tool/verify.sh linux-scaffold` | Только scaffold и документированный incomplete contract; native adapter не реализован |
 | `secrets.yml` | `tool/verify.sh secrets` | Локальный поиск типовых ключей по исходникам, в log выводятся только имена файлов |
 
+`tool/check_fixtures.dart` сверяет содержимое и типы канонических JSON fixtures.
+Реальный Android callback body сравнивается с fixture в `CallbackWorkerTest`, а
+HTTPS заголовки проверяются в `HttpsTransportTest`. Общий Darwin encoder,
+используемый iOS и macOS runtime, сравнивает body и заголовки с тем же fixture
+в `CallbackEnvelopeFixtureTests`; этот тест входит в Swift gate. Go handler
+читает canonical fixture в своих тестах. JSON сравнивается по структуре и
+значениям, без зависимости от порядка полей и форматирования файла.
+
 Windows и Linux были отложены; зелёные scaffold workflows не доказывают работу
 вызовов или системного UI. Все device/provider/OS notification сценарии
 требуют [ручной проверки](manual-validation.md). Автоматическая проверка

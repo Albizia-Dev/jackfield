@@ -6,6 +6,7 @@ import dev.albizia.jackfield.store.*
 import dev.albizia.jackfield.http.*
 import kotlinx.coroutines.test.runTest
 import org.json.JSONObject
+import org.json.JSONArray
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -13,6 +14,8 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import kotlin.test.*
+import java.io.File
+import java.time.Instant
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -40,6 +43,30 @@ class CallbackWorkerTest {
         assertFalse(sent.single().body.contains("Caller"))
         assertEquals(1, db.events().pendingFlutter().size)
         assertTrue(db.events().pendingHttp().isEmpty())
+    }
+
+    @Test fun `production callback body matches every canonical fixture field`() = runTest {
+        val fixture = JSONObject(canonicalCallbackFixture().readText())
+        val wire = fixture.getJSONObject("event")
+        val occurredAt = Instant.parse(wire.getString("occurredAt")).toEpochMilli()
+        now = occurredAt + 1_000
+        val nativeEvent = EventEntity(
+            eventId = wire.getString("eventId"), callId = wire.getString("callId"),
+            sequence = wire.getLong("sequence"), occurredAt = occurredAt,
+            type = wire.getString("type"), actionId = wire.getString("actionId"),
+            deadline = Instant.parse(wire.getString("deadline")).toEpochMilli(),
+            expiresAt = occurredAt + 86_400_000,
+        )
+        db.events().persist(call(sequence = nativeEvent.sequence), nativeEvent, 10)
+
+        processor.run(nativeEvent.callId)
+
+        val request = sent.single()
+        assertEquals(wire.getString("eventId"), request.eventId)
+        assertEquals(callbacks.endpoint, request.endpoint)
+        assertEquals(callbacks.token, request.token)
+        assertJsonEquals(fixture, JSONObject(request.body))
+        assertFalse(request.body.contains(callbacks.token))
     }
 
     @Test fun `transient delay is durable and another call progresses`() = runTest {
@@ -88,5 +115,35 @@ class CallbackWorkerTest {
         assertEquals("terminal", db.events().event("event-2")!!.httpState)
         assertEquals(2, db.events().pendingFlutter().size)
         assertTrue(db.events().pendingHttp().isEmpty())
+    }
+}
+
+private fun canonicalCallbackFixture(): File {
+    var directory: File? = File(requireNotNull(System.getProperty("user.dir"))).absoluteFile
+    while (directory != null) {
+        val candidate = directory.resolve("test/fixtures/callback_answer_requested_v1.json")
+        if (candidate.isFile) return candidate
+        directory = directory.parentFile
+    }
+    error("Cannot locate canonical callback fixture from Gradle working directory")
+}
+
+private fun assertJsonEquals(expected: Any?, actual: Any?) {
+    when (expected) {
+        is JSONObject -> {
+            assertTrue(actual is JSONObject)
+            assertEquals(expected.keys().asSequence().toSet(), actual.keys().asSequence().toSet())
+            for (key in expected.keys()) assertJsonEquals(expected.get(key), actual.get(key))
+        }
+        is JSONArray -> {
+            assertTrue(actual is JSONArray)
+            assertEquals(expected.length(), actual.length())
+            for (index in 0 until expected.length()) assertJsonEquals(expected.get(index), actual.get(index))
+        }
+        is Number -> {
+            assertTrue(actual is Number)
+            assertEquals(expected.toString(), actual.toString())
+        }
+        else -> assertEquals(expected, actual)
     }
 }

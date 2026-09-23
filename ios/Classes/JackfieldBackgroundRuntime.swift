@@ -203,14 +203,11 @@ private final class JackfieldHTTPDispatcher: NSObject, URLSessionTaskDelegate {
         try? await store.markHTTPTerminal(event.eventId)
         continue
       }
-      var request = URLRequest(url: endpoint)
-      request.httpMethod = "POST"
-      request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-      request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-      request.setValue(event.eventId, forHTTPHeaderField: "Idempotency-Key")
-      guard let body = try? JSONSerialization.data(withJSONObject: ["version": 1, "event": event.toWire()]) else { continue }
+      guard var request = try? event.callbackRequest(to: endpoint, token: token),
+            let body = request.httpBody else { continue }
       let file = Self.bodyFile(for: event.eventId)
       do { try body.write(to: file, options: .atomic) } catch { continue }
+      request.httpBody = nil
       let task = session.uploadTask(with: request, fromFile: file)
       task.taskDescription = JackfieldTaskMetadata(eventId: event.eventId, credentialFingerprint: fingerprint).description
       task.resume()

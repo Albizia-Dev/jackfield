@@ -47,6 +47,16 @@ public struct WireEnvelope: Codable, Equatable, Sendable {
     return value
   }
 
+  public func callbackRequest(to endpoint: URL, token: String) throws -> URLRequest {
+    var request = URLRequest(url: endpoint)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+    request.setValue(eventId, forHTTPHeaderField: "Idempotency-Key")
+    request.httpBody = try JSONSerialization.data(withJSONObject: ["version": 1, "event": toWire()])
+    return request
+  }
+
   public static func timestamp(_ date: Date) -> String {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
