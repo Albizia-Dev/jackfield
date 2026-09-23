@@ -14,6 +14,7 @@ final class JackfieldProtocolException implements Exception {
   /// A description that excludes the rejected payload and its personal data.
   final String message;
 
+  /// Formats a safe protocol error without the rejected wire payload.
   @override
   String toString() => 'JackfieldProtocolException: $message';
 }

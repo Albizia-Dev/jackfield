@@ -1,0 +1,9 @@
+# Push-приглашения и токены
+
+Jackfield не содержит Firebase SDK и не задаёт бизнес-формат push. Host-приложение проверяет отправителя, TTL, привязку к пользователю и формирует wire v1 для нативной точки входа. Сервер отправляет приглашение с новым стабильным `CallId`; повторный push с тем же событием не должен создавать второй звонок. После входа в Flutter приложение сверяет реальное состояние звонка с сервером.
+
+На Android собственный `FirebaseMessagingService` host-приложения преобразует FCM data message и вызывает `JackfieldPushReceiver.reportIncomingCall(context, payload)`; обновление токена передаёт в `JackfieldPushReceiver.updatePushToken`. На iOS host настраивает APNs/PushKit entitlement и background modes; адаптер обрабатывает объект `jackfield` в VoIP payload. На Web host Service Worker импортирует worker пакета, устанавливает обработчики и связывает приглашение с `installationId` и `sessionId`; подписка Push API допускается только из пользовательского жеста. На macOS адаптер не получает push-токены. Windows/Linux пока не имеют рабочего адаптера. Подробности и точный payload: [Android](android.md), [iOS](ios.md), [Web](web.md).
+
+Во Flutter сначала подпишитесь на `pushTokenUpdates`, затем вызовите `pushTokens()`. Это закрывает окно между снимком и ротацией: обновления могут прийти раньше или во время снимка, поэтому серверное хранилище токенов должно выполнять идемпотентный upsert/remove по provider и value. `PushTokenUpdate.removed` требует удаления старого токена. `pushTokens()` сам не запрашивает permission. Не логируйте значения токенов. Для Web подписка из жеста выполняется отдельно через `JackfieldWeb.subscribePushFromUserGesture`.
+
+`server_example/` показывает одну ручную схему с FCM и callback endpoint. Его in-memory состояние, service-account credentials из окружения и тестовые маршруты не входят в runtime пакета. Unit тесты сервера не подтверждают доставку реального push на устройство.

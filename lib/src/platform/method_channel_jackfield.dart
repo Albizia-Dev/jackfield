@@ -36,6 +36,7 @@ class MethodChannelJackfield extends JackfieldPlatform {
     WireCodec.decodePushTokenUpdate,
   );
 
+  /// Sends validated initialization over the native control channel.
   @override
   Future<JackfieldResult<void>> initialize(
     JackfieldConfiguration configuration,
@@ -45,6 +46,7 @@ class MethodChannelJackfield extends JackfieldPlatform {
     WireCodec.decodeVoidResult,
   );
 
+  /// Sends an incoming call request and decodes its typed snapshot.
   @override
   Future<JackfieldResult<CallSnapshot>> reportIncomingCall(IncomingCall call) =>
       _invoke(
@@ -53,6 +55,7 @@ class MethodChannelJackfield extends JackfieldPlatform {
         WireCodec.decodeCallResult,
       );
 
+  /// Sends an outgoing call request and decodes its typed snapshot.
   @override
   Future<JackfieldResult<CallSnapshot>> startOutgoingCall(OutgoingCall call) =>
       _invoke(
@@ -61,6 +64,7 @@ class MethodChannelJackfield extends JackfieldPlatform {
         WireCodec.decodeCallResult,
       );
 
+  /// Sends a partial call presentation update.
   @override
   Future<JackfieldResult<CallSnapshot>> updateCall(CallUpdate update) =>
       _invoke(
@@ -69,6 +73,7 @@ class MethodChannelJackfield extends JackfieldPlatform {
         WireCodec.decodeCallResult,
       );
 
+  /// Sends a call termination request with its reason.
   @override
   Future<JackfieldResult<CallSnapshot>> endCall(CallId id, EndReason reason) =>
       _invoke(
@@ -77,6 +82,7 @@ class MethodChannelJackfield extends JackfieldPlatform {
         WireCodec.decodeCallResult,
       );
 
+  /// Completes the action without acknowledging event delivery.
   @override
   Future<JackfieldResult<void>> completeAction(
     ActionId id,
@@ -87,6 +93,7 @@ class MethodChannelJackfield extends JackfieldPlatform {
     WireCodec.decodeVoidResult,
   );
 
+  /// Acknowledges only Flutter inbox event delivery.
   @override
   Future<JackfieldResult<void>> acknowledgeEvents(Set<EventId> ids) => _invoke(
     'acknowledgeEvents',
@@ -94,6 +101,7 @@ class MethodChannelJackfield extends JackfieldPlatform {
     WireCodec.decodeVoidResult,
   );
 
+  /// Reads provider tokens through a versioned channel query.
   @override
   Future<JackfieldResult<PushTokenSnapshot>> pushTokens() => _invoke(
     'pushTokens',
@@ -101,6 +109,7 @@ class MethodChannelJackfield extends JackfieldPlatform {
     WireCodec.decodePushTokensResult,
   );
 
+  /// Reads the native adapter's actual feature set and UI mechanism.
   @override
   Future<JackfieldCapabilities> capabilities() async {
     try {
@@ -117,6 +126,7 @@ class MethodChannelJackfield extends JackfieldPlatform {
     }
   }
 
+  /// Reads sanitized native permission and queue diagnostics.
   @override
   Future<JackfieldDiagnostics> diagnostics() async {
     try {
@@ -133,9 +143,11 @@ class MethodChannelJackfield extends JackfieldPlatform {
     }
   }
 
+  /// Publishes validated call events from the native event channel.
   @override
   Stream<JackfieldEvent> get events => _events;
 
+  /// Publishes validated provider-token changes from the native event channel.
   @override
   Stream<PushTokenUpdate> get pushTokenUpdates => _tokens;
 

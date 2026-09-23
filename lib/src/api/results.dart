@@ -60,6 +60,7 @@ final class JackfieldTransportException implements Exception {
   /// The stable failure category, safe for application decisions and logs.
   final JackfieldErrorCode code;
 
+  /// Formats only the stable error category, without native exception data.
   @override
   String toString() => 'JackfieldTransportException: ${code.name}';
 }

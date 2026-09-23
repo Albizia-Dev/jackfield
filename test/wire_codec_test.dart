@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:jackfield/jackfield.dart';
+import 'package:jackfield/jackfield_platform_interface.dart';
 
 Map<String, Object?> jsonFixture(String name) {
   final decoded = jsonDecode(File('test/fixtures/$name').readAsStringSync());

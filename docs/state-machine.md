@@ -1,0 +1,9 @@
+# Состояния, действия и подтверждения
+
+В общем Dart-автомате допустимы `created → ringing|connecting|ending|failed`, `ringing → connecting|ending|failed`, `connecting → active|ending|failed`, `active → ending|failed`, `ending → ended|failed`. `ended` и `failed` терминальны. Платформы могут выполнять системные переходы в несколько шагов, но не должны сообщать успешное действие, если системный шаг не состоялся. Недопустимая команда даёт `JackfieldErrorCode.invalidState`.
+
+Для входящего звонка `reportIncomingCall` сохраняет локальный snapshot и показывает UI. Когда человек отвечает, адаптер сохраняет `AnswerRequested(callId, eventId, sequence, actionId, deadline)`. Приложение подключает сигналинг и медиа и вызывает `completeAction(actionId, ActionResult.success/failure)` до дедлайна. Это подтверждение системного действия. После устойчивой обработки события приложение вызывает `acknowledgeEvents({eventId})`; это подтверждение Flutter-доставки. Если настроен callback, HTTP-доставка получает отдельное подтверждение при 2xx. Эти три действия нельзя заменять друг другом.
+
+После restart событие может повториться. Приложение сохраняет обработанные `EventId`, делает сетевые действия идемпотентными по `ActionId` или `CallId`, проверяет `sequence` внутри звонка и безопасно повторяет `completeAction`/ACK. Одинаковый номер `sequence` у разных `CallId` допустим. Просроченный answer возвращает `deadlineExceeded`; ACK не изменяет этот результат. `CallEnded` содержит причину `local`, `remote`, `rejected`, `missed` либо `failed`.
+
+Исходящий `startOutgoingCall` отвечает за системное представление, но wire v1 не содержит отдельной команды «медиа подключено»; результат команды не означает `active` на всех платформах. Приложение само закрывает медиасессию и вызывает `endCall(callId, reason)` после серверного завершения. Для подробностей см. [архитектуру](architecture.md) и [ручные сценарии](manual-validation.md).
