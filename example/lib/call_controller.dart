@@ -152,7 +152,8 @@ final class CallController extends ChangeNotifier {
         _failure('Завершение действия', error);
         return;
       }
-      await _ack(event.eventId);
+      final acknowledged = await _ack(event.eventId);
+      if (!acknowledged) return;
       _record(
         connected ? 'Ответ успешно обработан' : 'Ответ: ошибка сигналинга',
       );
@@ -165,16 +166,19 @@ final class CallController extends ChangeNotifier {
     await _ack(event.eventId);
   }
 
-  Future<void> _ack(EventId id) async {
+  Future<bool> _ack(EventId id) async {
     try {
       final result = await jackfield.acknowledgeEvents({id});
       if (result is JackfieldFailure<void>) {
         _record('ACK ${id.value}: ошибка ${result.error.code.name}');
+        return false;
       } else {
         _record('ACK ${id.value}: успешно', updateStatus: false);
+        return true;
       }
     } catch (error) {
       _failure('ACK ${id.value}', error);
+      return false;
     }
   }
 

@@ -79,6 +79,18 @@ void main() {
       expect(controller.eventLog.join(' '), contains('platformFailure'));
     },
   );
+
+  test('failed ACK remains the visible status', () async {
+    final plugin = RecordingJackfield()..ackFails = true;
+    final signaling = ControlledSignaling();
+    final controller = CallController(jackfield: plugin, signaling: signaling);
+    final handling = controller.handle(event);
+    signaling.finish(true);
+    await handling;
+
+    expect(plugin.operations, ['complete:action-1:success', 'ack:event-1']);
+    expect(controller.status, contains('ACK event-1: ошибка platformFailure'));
+  });
 }
 
 final class ControlledSignaling implements DemoSignaling {
@@ -95,6 +107,7 @@ final class ControlledSignaling implements DemoSignaling {
 final class RecordingJackfield implements Jackfield {
   final List<String> operations = [];
   bool completionFails = false;
+  bool ackFails = false;
 
   @override
   Future<JackfieldResult<void>> completeAction(
@@ -115,6 +128,11 @@ final class RecordingJackfield implements Jackfield {
   @override
   Future<JackfieldResult<void>> acknowledgeEvents(Set<EventId> ids) async {
     operations.add('ack:${ids.single.value}');
+    if (ackFails) {
+      return const JackfieldFailure(
+        JackfieldError(JackfieldErrorCode.platformFailure),
+      );
+    }
     return const JackfieldSuccess<void>(null);
   }
 
