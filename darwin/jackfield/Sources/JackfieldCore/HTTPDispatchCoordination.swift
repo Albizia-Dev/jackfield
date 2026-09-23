@@ -3,6 +3,7 @@ import Foundation
 public actor HTTPDispatchCoordination {
   private var held = false
   private var waiters: [CheckedContinuation<Void, Never>] = []
+  internal var pendingAcquisitions: Int { waiters.count }
 
   public init() {}
 
@@ -18,11 +19,12 @@ public actor HTTPDispatchCoordination {
 
   /// Only the final, synchronous enqueue runs under this coordination lock.
   /// Request construction, body file writes, and URLSession task creation must happen before this call.
-  public func enqueueIfCurrent(store: EventStore, ticket: HTTPDispatchTicket, at date: Date,
+  public func enqueueIfCurrent(store: EventStore, ticket: HTTPDispatchTicket,
+                               clock: @Sendable () -> Date = { Date() },
                                enqueue: @Sendable () -> Void) async throws -> Bool {
     await acquire()
     do {
-      let permitted = try await store.confirmHTTPDispatch(ticket, at: date)
+      let permitted = try await store.confirmHTTPDispatch(ticket, at: clock())
       if permitted { enqueue() }
       release()
       return permitted

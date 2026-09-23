@@ -351,7 +351,7 @@ final class EventStoreTests: XCTestCase {
       inventoryReached.fulfill()
       await gate.wait()
       return try await store.dispatchCoordination.enqueueIfCurrent(store: store, ticket: staleTicket,
-                                                                    at: Date(timeIntervalSince1970: 200)) {
+                                                                    clock: { Date(timeIntervalSince1970: 200) }) {
         submissions.record(staleTicket.event.eventId)
       }
     }
@@ -365,7 +365,7 @@ final class EventStoreTests: XCTestCase {
                                                                 at: Date(timeIntervalSince1970: 200))
     let retainedTicket = try XCTUnwrap(preparedRetained)
     let retainedSubmitted = try await store.dispatchCoordination.enqueueIfCurrent(store: store, ticket: retainedTicket,
-                                                                                  at: Date(timeIntervalSince1970: 200)) {
+                                                                                  clock: { Date(timeIntervalSince1970: 200) }) {
       submissions.record(retainedTicket.event.eventId)
     }
     XCTAssertTrue(retainedSubmitted)
@@ -431,7 +431,7 @@ final class EventStoreTests: XCTestCase {
       inventoryReached.fulfill()
       await gate.wait()
       return try await store.dispatchCoordination.enqueueIfCurrent(store: store, ticket: staleTicket,
-                                                                    at: Date(timeIntervalSince1970: 150)) {
+                                                                    clock: { Date(timeIntervalSince1970: 150) }) {
         submissions.record(staleTicket.event.eventId)
       }
     }
@@ -467,7 +467,7 @@ final class EventStoreTests: XCTestCase {
       inventoryReached.fulfill()
       await gate.wait()
       return try await store.dispatchCoordination.enqueueIfCurrent(store: store, ticket: staleTicket,
-                                                                    at: Date(timeIntervalSince1970: 150)) {
+                                                                    clock: { Date(timeIntervalSince1970: 150) }) {
         submissions.record("\(staleTicket.event.eventId)|\(staleTicket.configuration.endpoint)")
       }
     }
@@ -481,7 +481,7 @@ final class EventStoreTests: XCTestCase {
                                                                at: Date(timeIntervalSince1970: 150))
     let currentTicket = try XCTUnwrap(preparedCurrent)
     let currentDispatch = try await store.dispatchCoordination.enqueueIfCurrent(store: store, ticket: currentTicket,
-                                                                                at: Date(timeIntervalSince1970: 150)) {
+                                                                                clock: { Date(timeIntervalSince1970: 150) }) {
       submissions.record("\(currentTicket.event.eventId)|\(currentTicket.configuration.endpoint)")
     }
     XCTAssertTrue(currentDispatch)
@@ -538,7 +538,7 @@ final class EventStoreTests: XCTestCase {
     let resumeGate = DispatchSemaphore(value: 0)
     let dispatch = Task {
       try await store.dispatchCoordination.enqueueIfCurrent(store: store, ticket: ticket,
-                                                            at: Date(timeIntervalSince1970: 150)) {
+                                                            clock: { Date(timeIntervalSince1970: 150) }) {
         enqueueEntered.fulfill()
         resumeGate.wait()
       }
@@ -580,9 +580,50 @@ final class EventStoreTests: XCTestCase {
     try await store.disableHTTP()
     let submissions = HTTPSubmissionRecorder()
     let permitted = try await store.dispatchCoordination.enqueueIfCurrent(store: store, ticket: ticket,
-                                                                          at: Date(timeIntervalSince1970: 150)) {
+                                                                          clock: { Date(timeIntervalSince1970: 150) }) {
       submissions.record(ticket.event.eventId)
     }
+    XCTAssertFalse(permitted)
+    XCTAssertTrue(submissions.ids.isEmpty)
+    let pending = try await store.pendingHTTP()
+    let flutter = try await store.pendingFlutter()
+    XCTAssertTrue(pending.isEmpty)
+    XCTAssertEqual(flutter.map(\.eventId), ["event-1"])
+  }
+
+  func testTTLExpiringWhileEnqueueWaitsForCoordinationPreventsResume() async throws {
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let store = try EventStore(path: path)
+    try await store.configureHTTP(limit: 1, credentialFingerprint: "same",
+                                  endpoint: "https://example.test/hook", ttl: 60)
+    let event = try WireEnvelope.ended(callId: "call-1", eventId: "event-1", sequence: 0,
+                                       occurredAt: Date(timeIntervalSince1970: 100), reason: "remote")
+    try await store.append(event)
+    let prepared = try await store.prepareHTTPDispatch(eventId: "event-1", at: Date(timeIntervalSince1970: 150))
+    let ticket = try XCTUnwrap(prepared)
+    let clock = HTTPMutableClock(Date(timeIntervalSince1970: 150))
+    let submissions = HTTPSubmissionRecorder()
+    let coordination = store.dispatchCoordination
+    await coordination.acquire()
+    let started = expectation(description: "dispatch attempted while coordination held")
+    let dispatch = Task {
+      started.fulfill()
+      return try await coordination.enqueueIfCurrent(store: store, ticket: ticket, clock: { clock.read() }) {
+        submissions.record(ticket.event.eventId)
+      }
+    }
+    await fulfillment(of: [started], timeout: 2)
+    var queued = 0
+    for _ in 0..<10_000 {
+      queued = await coordination.pendingAcquisitions
+      if queued > 0 { break }
+      await Task.yield()
+    }
+    XCTAssertEqual(queued, 1)
+    clock.set(Date(timeIntervalSince1970: 161))
+    await coordination.release()
+    let permitted = try await dispatch.value
     XCTAssertFalse(permitted)
     XCTAssertTrue(submissions.ids.isEmpty)
     let pending = try await store.pendingHTTP()
@@ -620,5 +661,22 @@ private final class HTTPSubmissionRecorder: @unchecked Sendable {
   var ids: [String] {
     lock.lock(); defer { lock.unlock() }
     return submitted
+  }
+}
+
+private final class HTTPMutableClock: @unchecked Sendable {
+  private let lock = NSLock()
+  private var current: Date
+
+  init(_ date: Date) { current = date }
+
+  func read() -> Date {
+    lock.lock(); defer { lock.unlock() }
+    return current
+  }
+
+  func set(_ date: Date) {
+    lock.lock(); defer { lock.unlock() }
+    current = date
   }
 }

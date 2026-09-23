@@ -229,7 +229,7 @@ private final class JackfieldHTTPDispatcher: NSObject, URLSessionTaskDelegate {
                                                     credentialFingerprint: ticket.credentialFingerprint,
                                                     attemptId: attemptId).description
       let coordination = store.dispatchCoordination
-      let permitted = (try? await coordination.enqueueIfCurrent(store: store, ticket: ticket, at: Date()) {
+      let permitted = (try? await coordination.enqueueIfCurrent(store: store, ticket: ticket) {
         // Only synchronous enqueue runs under coordination; all file and task work ran outside it.
         task.resume()
       }) ?? false
