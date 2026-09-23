@@ -16,6 +16,13 @@ final class FakeSignaling implements DemoSignaling {
   Future<bool> connect(CallId callId) async => shouldConnect;
 }
 
+final class _AnswerProgress {
+  bool? connected;
+  bool actionCompleted = false;
+  bool acknowledged = false;
+  Future<void>? inFlight;
+}
+
 /// Drives only public Jackfield operations for the manual integration stand.
 final class CallController extends ChangeNotifier {
   CallController({required this.jackfield, required this.signaling});
@@ -30,12 +37,16 @@ final class CallController extends ChangeNotifier {
   CallId? currentCallId;
   StreamSubscription<JackfieldEvent>? _events;
   StreamSubscription<PushTokenUpdate>? _tokenUpdates;
+  final Map<EventId, _AnswerProgress> _answers = {};
+  final Set<CallId> _endedCalls = {};
+  bool _disposed = false;
 
   Future<void> initialize({CallbackConfiguration? callbacks}) async {
     try {
       final result = await jackfield.initialize(
         JackfieldConfiguration(callbacks: callbacks),
       );
+      if (_disposed) return;
       _showResult('Инициализация', result);
       if (result is JackfieldFailure<void>) return;
       _events ??= jackfield.events.listen(
@@ -57,7 +68,9 @@ final class CallController extends ChangeNotifier {
   Future<void> refresh() async {
     try {
       capabilities = await jackfield.capabilities();
+      if (_disposed) return;
       diagnostics = await jackfield.diagnostics();
+      if (_disposed) return;
       notifyListeners();
     } catch (error) {
       _failure('Диагностика', error);
@@ -121,49 +134,81 @@ final class CallController extends ChangeNotifier {
     try {
       final result = await jackfield.endCall(id, EndReason.local);
       _showResult('Завершение ${id.value}', result);
-      if (result is JackfieldSuccess<CallSnapshot>) currentCallId = null;
     } catch (error) {
       _failure('Завершение', error);
     }
   }
 
   Future<void> handle(JackfieldEvent event) async {
+    if (event is AnswerRequested) {
+      final progress = _answers.putIfAbsent(event.eventId, _AnswerProgress.new);
+      if (progress.acknowledged) return;
+      await (progress.inFlight ??= _handleAnswer(
+        event,
+        progress,
+      ).whenComplete(() => progress.inFlight = null));
+      return;
+    }
     _record(
       'Событие ${event.eventId.value} #${event.sequence}: ${event.runtimeType}',
     );
-    if (event is AnswerRequested) {
-      var connected = false;
+    if (event is CallEnded) {
+      _endedCalls.add(event.callId);
+      if (event.callId == currentCallId) {
+        currentCallId = null;
+        _record('Звонок завершён: ${event.reason.name}');
+      }
+    }
+    await _ack(event.eventId);
+  }
+
+  Future<void> _handleAnswer(
+    AnswerRequested event,
+    _AnswerProgress progress,
+  ) async {
+    _record(
+      'Событие ${event.eventId.value} #${event.sequence}: ${event.runtimeType}',
+    );
+    if (progress.connected == null) {
       try {
-        connected = await signaling.connect(event.callId);
-        _record(connected ? 'Сигналинг успешен' : 'Сигналинг вернул ошибку');
+        progress.connected = await signaling.connect(event.callId);
+        _record(
+          progress.connected! ? 'Сигналинг успешен' : 'Сигналинг вернул ошибку',
+        );
       } catch (error) {
+        progress.connected = false;
         _failure('Сигналинг', error);
       }
+    }
+    if (!progress.actionCompleted) {
       try {
         final completion = await jackfield.completeAction(
           event.actionId,
-          connected
+          progress.connected!
               ? const ActionResult.success()
               : const ActionResult.failure(),
         );
+        if (completion is JackfieldSuccess<void>) {
+          progress.actionCompleted = true;
+          if (progress.connected! && !_endedCalls.contains(event.callId)) {
+            currentCallId = event.callId;
+          }
+        }
         _showResult('Завершение действия', completion);
         if (completion is JackfieldFailure<void>) return;
       } catch (error) {
         _failure('Завершение действия', error);
         return;
       }
-      final acknowledged = await _ack(event.eventId);
-      if (!acknowledged) return;
-      _record(
-        connected ? 'Ответ успешно обработан' : 'Ответ: ошибка сигналинга',
-      );
-      return;
     }
-    if (event is CallEnded && event.callId == currentCallId) {
-      currentCallId = null;
-      _record('Звонок завершён: ${event.reason.name}');
-    }
-    await _ack(event.eventId);
+    final acknowledged = await _ack(event.eventId);
+    if (!acknowledged) return;
+    progress.acknowledged = true;
+    _record(
+      progress.connected!
+          ? 'Ответ успешно обработан'
+          : 'Ответ: ошибка сигналинга',
+    );
   }
 
   Future<bool> _ack(EventId id) async {
@@ -200,11 +245,12 @@ final class CallController extends ChangeNotifier {
     if (updateStatus) status = message;
     eventLog.insert(0, '${DateTime.now().toIso8601String()} $message');
     if (eventLog.length > 100) eventLog.removeLast();
-    notifyListeners();
+    if (!_disposed) notifyListeners();
   }
 
   @override
   void dispose() {
+    _disposed = true;
     unawaited(_events?.cancel());
     unawaited(_tokenUpdates?.cancel());
     super.dispose();
