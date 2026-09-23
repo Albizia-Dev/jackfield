@@ -83,19 +83,45 @@ await calls.initialize(JackfieldConfiguration(
   ),
 ));
 
-// Подпишитесь до снимка, чтобы не потерять ротацию между этими действиями.
-final updates = calls.pushTokenUpdates.listen((update) {
-  // Сохраните новый токен на сервере или удалите старый при removed == true.
-});
+// tokenStore — устойчивое хранилище приложения с replaceAll/apply.
+final buffered = <PushTokenUpdate>[];
+var bootstrapping = true;
+Future<void> writes = Future<void>.value();
+void enqueue(PushTokenUpdate update) {
+  writes = writes.then((_) => tokenStore.apply(update));
+}
+final updates = calls.pushTokenUpdates.listen(
+  (update) {
+    if (bootstrapping) {
+      buffered.add(update);
+    } else {
+      enqueue(update);
+    }
+  },
+  // Планировщик сверяет полный снимок после уже поставленных в очередь записей.
+  onError: (Object _) => tokenStore.scheduleFullReconciliation(),
+);
 final tokens = await calls.pushTokens();
+if (tokens case JackfieldSuccess<PushTokenSnapshot>(:final value)) {
+  await tokenStore.replaceAll(value.tokens); // Сначала снимок.
+  for (final update in buffered) {
+    enqueue(update); // Затем буфер в порядке поступления.
+  }
+  buffered.clear();
+  bootstrapping = false; // Далее обновления попадают в ту же очередь записи.
+  await writes;
+} else {
+  await updates.cancel();
+  tokenStore.scheduleFullReconciliation();
+}
 final diagnostics = await calls.diagnostics();
 print(diagnostics.pendingFlutterEvents);
 print(diagnostics.pendingHttpEvents);
 print(diagnostics.httpPausedForAuthentication);
-await updates.cancel();
+// На logout/dispose: await updates.cancel().
 ```
 
-Используйте HTTPS endpoint и отдельный узко ограниченный bearer token. Смена endpoint/token повторной `initialize` возобновляет очередь после `401/403`; сама Flutter-подписка не нужна для разрешённого платформой фонового callback. `pushTokens()` не запрашивает разрешение. Получение FCM/APNs/Web Push настраивает host-приложение; см. [push](docs/push.md) и [callbacks](docs/http-callbacks.md). Перед действием проверьте `capabilities()`; `diagnostics()` даёт безопасный снимок очередей и разрешений без секретов. [Матрица возможностей](docs/capabilities.md) отдельно описывает реализацию и ограничения проверок.
+Используйте HTTPS endpoint и отдельный узко ограниченный bearer token. Смена endpoint/token повторной `initialize` возобновляет очередь после `401/403`; сама Flutter-подписка не нужна для разрешённого платформой фонового callback. `pushTokens()` не запрашивает разрешение. Поток не содержит revision/timestamp и не даёт атомарной границы подписки со снимком: после ошибки потока, restart и периодически сверяйте полный снимок с сервером. Получение FCM/APNs/Web Push настраивает host-приложение; см. [push](docs/push.md) и [callbacks](docs/http-callbacks.md). Перед действием проверьте `capabilities()`; `diagnostics()` даёт безопасный снимок очередей и разрешений без секретов. [Матрица возможностей](docs/capabilities.md) отдельно описывает реализацию и ограничения проверок.
 
 ## Разработка
 
