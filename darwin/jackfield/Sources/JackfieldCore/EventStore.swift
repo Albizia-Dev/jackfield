@@ -145,7 +145,7 @@ public actor EventStore {
       return event
     }
   }
-  public func saveEnded(callId: String, eventId: String, reason: String, at date: Date, admissionCritical: Bool = false) throws -> WireEnvelope {
+  public func saveEnded(callId: String, eventId: String, reason: String, at date: Date, admissionCritical: Bool = true) throws -> WireEnvelope {
     try transaction {
       guard var record = try snapshot(callId: callId), record.state != "ended" else { throw JackfieldCoreError.invalidState }
       let event = try WireEnvelope.ended(callId: callId, eventId: eventId, sequence: try nextSequence(callId), occurredAt: date, reason: reason)

@@ -12,7 +12,10 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
   private let store: EventStore?
   private var controller: IOSCallController?
   private var registry: JackfieldPushRegistry?
-  private var eventsSink: FlutterEventSink?
+  private lazy var replaySession = DarwinEventReplaySession(loadPending: { [weak self] in
+    guard let store = self?.store else { throw JackfieldCoreError.platformFailure }
+    return try await store.pendingFlutter()
+  })
   private var tokensSink: FlutterEventSink?
   private var pushToken: String?
   private var lastError: String?
@@ -46,9 +49,8 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
     let channel = FlutterMethodChannel(name: "jackfield", binaryMessenger: registrar.messenger())
     registrar.addMethodCallDelegate(instance, channel: channel)
     FlutterEventChannel(name: "jackfield/events", binaryMessenger: registrar.messenger()).setStreamHandler(JackfieldStreamHandler(onListen: { [weak instance] sink in
-      instance?.eventsSink = sink
-      instance?.replay()
-    }, onCancel: { [weak instance] in instance?.eventsSink = nil }))
+      instance?.startReplay(sink)
+    }, onCancel: { [weak instance] in instance?.replaySession.cancel() }))
     FlutterEventChannel(name: "jackfield/push_token_updates", binaryMessenger: registrar.messenger()).setStreamHandler(JackfieldStreamHandler(onListen: { [weak instance] sink in
       instance?.tokensSink = sink
     }, onCancel: { [weak instance] in instance?.tokensSink = nil }))
@@ -139,20 +141,16 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
 
   private func publish(_ event: WireEnvelope) {
     DispatchQueue.main.async { [weak self] in
-      self?.eventsSink?(event.toWire())
+      self?.replaySession.publish(event)
       Task { await Self.backgroundRuntime.sendReady() }
     }
   }
-  private func replay() {
-    guard let store else {
-      eventsSink?(FlutterError(code: "platformFailure", message: "Native storage unavailable", details: nil))
-      return
-    }
-    Task { [weak self] in
-      guard let self else { return }
-      guard let pending = try? await store.pendingFlutter() else { return }
-      for event in pending { await MainActor.run { self.eventsSink?(event.toWire()) } }
-    }
+  private func startReplay(_ sink: @escaping FlutterEventSink) {
+    replaySession.start(onEvent: { sink($0.toWire()) }, onFailure: { [weak self] in
+      self?.lastError = "platformFailure"
+      sink(FlutterError(code: "platformFailure", message: "Durable event replay unavailable", details: nil))
+      sink(FlutterEndOfEventStream)
+    })
   }
   private func capabilities() -> [String: Any] {
     guard store != nil, controller != nil else { return ["version": 1, "platform": "ios", "mechanism": "unavailable", "features": [], "reason": "Native storage unavailable"] }

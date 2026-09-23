@@ -183,4 +183,24 @@ final class EventStoreTests: XCTestCase {
     XCTAssertEqual(resolution.ended?.reason, "failed")
     XCTAssertEqual(events.map(\.eventId), ["answer-1", "end-1"])
   }
+
+  func testSaveEndedKeepsFlutterTerminalEventWhenCallbackOutboxIsFull() async throws {
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let store = try EventStore(path: path)
+    try await store.configureHTTP(limit: 1)
+    try await store.save(snapshot: CallRecord(callId: "call-1", state: "ringing", media: "audio"))
+    let occupying = try WireEnvelope.ended(callId: "other-call", eventId: "occupying", sequence: 0,
+                                           occurredAt: Date(timeIntervalSince1970: 100), reason: "remote")
+    try await store.append(occupying)
+
+    let ended = try await store.saveEnded(callId: "call-1", eventId: "terminal", reason: "local",
+                                          at: Date(timeIntervalSince1970: 101))
+    let reopened = try EventStore(path: path)
+    let snapshot = try await reopened.snapshot(callId: "call-1")
+    let flutter = try await reopened.pendingFlutter()
+    XCTAssertEqual(snapshot?.state, "ended")
+    XCTAssertEqual(ended.eventId, "terminal")
+    XCTAssertEqual(flutter.map(\.eventId), ["terminal", "occupying"])
+  }
 }
