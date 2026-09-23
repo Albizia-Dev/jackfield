@@ -26,6 +26,14 @@ public struct MacOSEventReplayBuffer {
     delivered.removeAll()
   }
 
+  /// Invalidates a failed replay so its buffered events cannot reach a listener.
+  @discardableResult
+  public mutating func fail(generation expected: Int) -> Bool {
+    guard replaying, expected == generation else { return false }
+    cancel()
+    return true
+  }
+
   public mutating func publish(_ event: WireEnvelope) -> [WireEnvelope] {
     if replaying { buffered.append(event); return [] }
     return delivered.insert(event.eventId).inserted ? [event] : []

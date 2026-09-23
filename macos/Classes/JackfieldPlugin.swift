@@ -142,17 +142,17 @@ public final class JackfieldPlugin: NSObject, @preconcurrency FlutterPlugin {
     eventsSink = sink
     let generation = replayBuffer.begin()
     guard let store else {
-      sink(FlutterError(code: "platformFailure", message: "Native storage unavailable", details: nil))
+      failReplay(generation: generation, sink: sink, message: "Native storage unavailable")
       return
     }
     Task { @MainActor [weak self] in
       let pending = try? await store.pendingFlutter()
       guard let self, self.replayBuffer.isCurrent(generation) else { return }
-      if pending == nil {
-        self.lastError = "platformFailure"
-        self.eventsSink?(FlutterError(code: "platformFailure", message: nil, details: nil))
+      guard let pending else {
+        self.failReplay(generation: generation, sink: sink)
+        return
       }
-      var batch = self.replayBuffer.finish(generation: generation, pending: pending ?? [])
+      var batch = self.replayBuffer.finish(generation: generation, pending: pending)
       while self.replayBuffer.isCurrent(generation) {
         for event in batch {
           guard self.replayBuffer.isCurrent(generation) else { return }
@@ -162,6 +162,14 @@ public final class JackfieldPlugin: NSObject, @preconcurrency FlutterPlugin {
         if batch.isEmpty { return }
       }
     }
+  }
+
+  private func failReplay(generation: Int, sink: @escaping FlutterEventSink, message: String? = nil) {
+    guard replayBuffer.fail(generation: generation) else { return }
+    lastError = "platformFailure"
+    eventsSink = nil
+    sink(FlutterError(code: "platformFailure", message: message, details: nil))
+    sink(FlutterEndOfEventStream)
   }
 
   private func stopReplay() {
