@@ -1,3 +1,9 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-  package="dev.albizia.jackfield">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <application>
+        <receiver android:name="dev.albizia.jackfield.push.JackfieldPushReceiver" android:exported="false" />
+        <receiver android:name="dev.albizia.jackfield.push.JackfieldActionReceiver" android:exported="false" />
+    </application>
 </manifest>
