@@ -83,19 +83,23 @@ func (r *router) end(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 	id := request.PathValue("callId")
-	call, ok := r.store.Get(id)
-	if !ok {
+	call, disposition := r.store.ReserveEnd(id)
+	switch disposition {
+	case calls.EndNotFound:
 		w.WriteHeader(http.StatusNotFound)
 		return
-	}
-	if call.State == calls.StateEnded || call.State == calls.StateRejected {
+	case calls.EndAlreadyComplete:
 		w.WriteHeader(http.StatusNoContent)
+		return
+	case calls.EndInProgress:
+		w.WriteHeader(http.StatusConflict)
 		return
 	}
 	if _, err := r.push.SendEnd(request.Context(), call.DeviceToken, call); err != nil {
+		r.store.FinishEnd(id, false)
 		w.WriteHeader(http.StatusBadGateway)
 		return
 	}
-	r.store.End(id)
+	r.store.FinishEnd(id, true)
 	w.WriteHeader(http.StatusNoContent)
 }

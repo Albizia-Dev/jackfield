@@ -38,12 +38,19 @@ type Event struct {
 }
 
 type Store struct {
-	mu     sync.Mutex
-	calls  map[string]Call
-	events map[string]Event
+	mu         sync.Mutex
+	calls      map[string]Call
+	events     map[string]Event
+	sequence   map[string]int64
+	endPending map[string]bool
 }
 
-func NewStore() *Store { return &Store{calls: make(map[string]Call), events: make(map[string]Event)} }
+func NewStore() *Store {
+	return &Store{
+		calls: make(map[string]Call), events: make(map[string]Event),
+		sequence: make(map[string]int64), endPending: make(map[string]bool),
+	}
+}
 
 func (s *Store) Put(call Call) bool {
 	s.mu.Lock()
@@ -69,21 +76,57 @@ func (s *Store) Delete(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.calls, id)
+	delete(s.sequence, id)
+	delete(s.endPending, id)
 }
 
-func (s *Store) End(id string) (Call, bool) {
+type EndDisposition uint8
+
+const (
+	EndNotFound EndDisposition = iota
+	EndAlreadyComplete
+	EndInProgress
+	EndReserved
+)
+
+// ReserveEnd allows only one in-flight remote-end push for a call.
+func (s *Store) ReserveEnd(id string) (Call, EndDisposition) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	call, ok := s.calls[id]
 	if !ok {
-		return Call{}, false
+		return Call{}, EndNotFound
 	}
-	call.State = StateEnded
-	s.calls[id] = call
-	return call, true
+	if call.State == StateEnded || call.State == StateRejected {
+		return call, EndAlreadyComplete
+	}
+	if s.endPending[id] {
+		return call, EndInProgress
+	}
+	s.endPending[id] = true
+	return call, EndReserved
 }
 
-// RecordEvent accepts an event only once, including across HTTP retries.
+// FinishEnd commits a successful send or releases the reservation for retry.
+func (s *Store) FinishEnd(id string, sent bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.endPending[id] {
+		return
+	}
+	delete(s.endPending, id)
+	if !sent {
+		return
+	}
+	call, ok := s.calls[id]
+	if ok && call.State != StateEnded && call.State != StateRejected {
+		call.State = StateEnded
+		s.calls[id] = call
+	}
+}
+
+// RecordEvent accepts event IDs once. Stale callbacks are acknowledged but do
+// not change call state, so provider retries cannot roll a call backward.
 func (s *Store) RecordEvent(event Event) (found bool, duplicate bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -95,6 +138,13 @@ func (s *Store) RecordEvent(event Event) (found bool, duplicate bool) {
 		return true, true
 	}
 	s.events[event.EventID] = event
+	if latest, exists := s.sequence[event.CallID]; exists && event.Sequence <= latest {
+		return true, false
+	}
+	s.sequence[event.CallID] = event.Sequence
+	if call.State == StateEnded || call.State == StateRejected {
+		return true, false
+	}
 	switch event.Type {
 	case "answer_requested":
 		call.State = StateAnswerRequested
