@@ -542,6 +542,35 @@ for (const source of ['reportIncoming', 'push']) {
   });
 }
 
+for (const source of ['reportIncoming', 'push']) {
+  test(`${source} closes a late notification when concurrent end storage aborts`, async () => {
+    const h = harness();
+    h.scope.JackfieldWorker.install();
+    if (source === 'push') await bind(h);
+    const visible = [];
+    let releaseShow;
+    h.scope.registration.showNotification = (title, options) => new Promise(resolve => {
+      releaseShow = () => {
+        visible.push({ tag: options.tag, closed: false, close() { this.closed = true; } });
+        resolve();
+      };
+    });
+    h.scope.registration.getNotifications = async () => visible.filter(item => !item.closed);
+    const pendingShow = source === 'push' ? pushCall(h) : h.scope.JackfieldWorker.command({
+      version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' },
+    });
+    while (!releaseShow) await new Promise(resolve => setTimeout(resolve, 1));
+    abortNextTransaction(h, (names, mode) => mode === 'readwrite' && names.includes('snapshots') && names.includes('inbox'));
+    await assert.rejects(h.scope.JackfieldWorker.command({ version: 1, command: 'end', callId: 'call-1', reason: 'remote' }));
+    assert.equal(visible.length, 0);
+    releaseShow();
+    const result = await pendingShow;
+    if (source === 'reportIncoming') assert.equal(result.error.code, 'invalidState');
+    assert.equal(visible[0].closed, true);
+    assert.equal((await records(h.scope.JackfieldDatabaseName, 'snapshots'))[0].state, 'presentationFailed');
+  });
+}
+
 test('end closes a visible notification even when its IndexedDB transaction aborts', async () => {
   const h = harness();
   h.scope.JackfieldWorker.install();

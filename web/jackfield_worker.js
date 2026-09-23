@@ -5,6 +5,7 @@
   let settings = { leaseMs: 45000, heartbeatMs: 15000 };
   let deadlineTimer = null;
   const presentingCalls = new Set();
+  const endingPresentations = new Set();
 
   function configFingerprint(config) {
     return config && JSON.stringify([config.endpoint, config.auth?.type, config.auth?.token,
@@ -180,6 +181,10 @@
         const store = tx.objectStore('snapshots');
         const current = await request(store.get(callId));
         if (current?.state === 'presenting') {
+          if (endingPresentations.has(callId)) {
+            store.put({ ...current, state: 'presentationFailed' });
+            return 'presentationFailed';
+          }
           store.put({ ...current, state: 'ringing' });
           return 'ringing';
         }
@@ -196,6 +201,7 @@
   }
 
   async function terminalize(callId, reason, expectedActionId) {
+    if (presentingCalls.has(callId)) endingPresentations.add(callId);
     let result;
     try {
       result = await transaction(['snapshots', 'inbox', 'outbox', 'meta', 'receipts'], 'readwrite', async tx => {
@@ -348,7 +354,10 @@
       });
       if (!shown) return;
       await safeDrain();
-    } finally { presentingCalls.delete(payload.callId); }
+    } finally {
+      presentingCalls.delete(payload.callId);
+      endingPresentations.delete(payload.callId);
+    }
   }
 
   async function click(event) {
@@ -542,7 +551,10 @@
           } catch (_) { return { status: 'failure', error: { code: 'platformFailure' } }; }
           if (!shown) return { status: 'failure', error: { code: 'invalidState' } };
           return { status: 'success', value: snapshot };
-        } finally { presentingCalls.delete(call.callId); }
+        } finally {
+          presentingCalls.delete(call.callId);
+          endingPresentations.delete(call.callId);
+        }
       }
       case 'end': {
         const reason = message.reason || 'local';
