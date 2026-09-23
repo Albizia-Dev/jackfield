@@ -8,5 +8,6 @@
 .pub-cache/
 .pub/
 build/
+node_modules/
 *.iml
 pubspec.lock

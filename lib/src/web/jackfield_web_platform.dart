@@ -56,14 +56,7 @@ final class JackfieldWebPlatform extends JackfieldPlatform {
           }
         });
       }
-      if (await WebBridge.claim()) {
-        final replay = await _command('pending');
-        if (replay['status'] == 'success') {
-          for (final payload in replay['value'] as List) {
-            _events.add(WireCodec.decodeEvent(payload));
-          }
-        }
-      }
+      await WebBridge.claim();
       return WireCodec.decodeVoidResult(result);
     } catch (_) {
       return const JackfieldFailure(
@@ -194,6 +187,16 @@ final class JackfieldWebPlatform extends JackfieldPlatform {
   @override
   Future<JackfieldDiagnostics> diagnostics() async {
     final permission = WebBridge.permission();
+    Map<String, Object?>? worker;
+    try {
+      final response = await _command('diagnostics');
+      if (response['status'] == 'success') {
+        worker = (response['value'] as Map).cast<String, Object?>();
+      }
+    } catch (_) {
+      // Browser permission remains queryable if the worker is unavailable.
+    }
+    final httpDiagnostic = worker?['httpDiagnostic'];
     return JackfieldDiagnostics(
       mechanism: JackfieldMechanism.webNotification,
       permissions: {
@@ -204,7 +207,16 @@ final class JackfieldWebPlatform extends JackfieldPlatform {
           _ => JackfieldPermissionState.unknown,
         },
       },
-      httpPausedForAuthentication: false,
+      pendingFlutterEvents: worker?['pendingFlutterEvents'] as int?,
+      pendingHttpEvents: worker?['pendingHttpEvents'] as int?,
+      httpPausedForAuthentication: worker?['authPaused'] == true,
+      lastError: httpDiagnostic is Map
+          ? JackfieldError(switch (httpDiagnostic['code']) {
+              'queueFull' || 'storageFailure' => JackfieldErrorCode.storageFull,
+              'schedulerFailure' => JackfieldErrorCode.temporarilyUnavailable,
+              _ => JackfieldErrorCode.platformFailure,
+            }, nativeCode: httpDiagnostic['code'] as String?)
+          : null,
     );
   }
 

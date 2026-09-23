@@ -47,40 +47,53 @@
     }
   }
 
-  async function pending() {
-    return transaction(['inbox'], 'readonly', async tx =>
-      (await request(tx.objectStore('inbox').getAll())).filter(item => !item.acknowledged && item.event).map(item => item.event));
+  async function pending(owner, token) {
+    return transaction(['meta', 'inbox'], 'readonly', async tx => {
+      const lease = await request(tx.objectStore('meta').get('owner'));
+      if (!lease || lease.owner !== owner || lease.token !== token || lease.expiresAt <= Date.now()) return null;
+      return (await request(tx.objectStore('inbox').getAll())).filter(item => !item.acknowledged && item.event).map(item => item.event);
+    });
   }
 
   async function claim(owner) {
     if (!owner) return false;
-    return transaction(['meta'], 'readwrite', async tx => {
+    return transaction(['meta', 'inbox'], 'readwrite', async tx => {
       const store = tx.objectStore('meta');
       const current = await request(store.get('owner'));
       const now = Date.now();
       if (current && current.owner !== owner && current.expiresAt > now) return false;
-      store.put({ id: 'owner', owner, expiresAt: now + settings.leaseMs });
-      return true;
+      const token = current && current.owner === owner && current.expiresAt > now ? current.token : scope.crypto.randomUUID();
+      store.put({ id: 'owner', owner, token, expiresAt: now + settings.leaseMs });
+      const replay = current && current.owner === owner && current.expiresAt > now ? [] :
+        (await request(tx.objectStore('inbox').getAll())).filter(item => !item.acknowledged && item.event).map(item => item.event);
+      return { token, pending: replay };
     });
   }
 
-  async function acknowledge(eventIds) {
-    return transaction(['inbox'], 'readwrite', async tx => {
+  async function acknowledge(owner, token, eventIds) {
+    return transaction(['meta', 'inbox'], 'readwrite', async tx => {
+      const lease = await request(tx.objectStore('meta').get('owner'));
+      if (!lease || lease.owner !== owner || lease.token !== token || lease.expiresAt <= Date.now()) return false;
       const store = tx.objectStore('inbox');
       for (const id of eventIds) {
         const item = await request(store.get(id));
         if (item) store.put({ ...item, acknowledged: true });
       }
+      return true;
     });
   }
 
   function validPush(value) {
     return value && value.version === 1 && value.type === 'incoming' &&
+      typeof value.installationId === 'string' && value.installationId.length > 0 &&
+      typeof value.sessionId === 'string' && value.sessionId.length > 0 &&
       typeof value.callId === 'string' && value.callId.length > 0 &&
       typeof value.eventId === 'string' && value.eventId.length > 0 &&
-      value.caller && typeof value.caller.displayName === 'string' &&
+      value.caller && typeof value.caller.id === 'string' && value.caller.id.length > 0 &&
+      typeof value.caller.displayName === 'string' && value.caller.displayName.length > 0 &&
       ['audio', 'video'].includes(value.media) &&
-      Number.isFinite(Date.parse(value.expiresAt)) && Date.parse(value.expiresAt) > Date.now();
+      Number.isFinite(Date.parse(value.expiresAt)) && Date.parse(value.expiresAt) > Date.now() &&
+      Date.parse(value.expiresAt) - Date.now() <= 300000;
   }
 
   async function publish(event) {
@@ -89,20 +102,48 @@
   }
 
   async function persistEvent(event, snapshot, receipt) {
-    await transaction(['snapshots', 'inbox', 'outbox', 'meta', 'receipts'], 'readwrite', async tx => {
+    const persisted = await transaction(['snapshots', 'inbox', 'receipts', 'meta'], 'readwrite', async tx => {
       const inbox = tx.objectStore('inbox');
-      if (await request(inbox.get(event.eventId))) return;
+      if (await request(inbox.get(event.eventId))) return false;
+      if (snapshot) {
+        const previous = await request(tx.objectStore('snapshots').get(event.callId));
+        if (!previous || previous.state !== 'ringing') return false;
+        if (previous.installationId) {
+          const binding = await request(tx.objectStore('meta').get('pushBinding'));
+          if (!binding || binding.installationId !== previous.installationId || binding.sessionId !== previous.sessionId) return false;
+        }
+      }
       inbox.put({ id: event.eventId, event, acknowledged: false });
       if (snapshot) tx.objectStore('snapshots').put({ id: snapshot.callId, ...snapshot });
       if (receipt) tx.objectStore('receipts').put(receipt);
-      const config = await request(tx.objectStore('meta').get('callbackConfig'));
-      if (config) {
-        const existing = await request(tx.objectStore('outbox').getAll());
-        if (existing.length >= config.maxPendingEvents) throw new Error('callback queue full');
-        tx.objectStore('outbox').put({ id: event.eventId, event, attempt: 0, createdAt: Date.now(), nextAt: 0 });
-      }
+      return true;
     });
+    if (!persisted) return;
     await publish(event);
+    try {
+      await transaction(['meta', 'outbox'], 'readwrite', async tx => {
+        const meta = tx.objectStore('meta');
+        const config = await request(meta.get('callbackConfig'));
+        if (!config) return;
+        const existing = await request(tx.objectStore('outbox').getAll());
+        if (existing.filter(item => item.state === 'pending' || item.state === 'sending').length >= config.maxPendingEvents) {
+          meta.put({ id: 'httpDiagnostic', code: 'queueFull', eventId: event.eventId });
+          return;
+        }
+        tx.objectStore('outbox').put({ id: event.eventId, event, state: 'pending', attempt: 0, nextAt: 0,
+          expiresAt: Date.parse(event.occurredAt) + config.timeToLiveMs });
+      });
+      await scheduleOutbox();
+    } catch (_) { await diagnostic('storageFailure', event.eventId); }
+  }
+
+  async function diagnostic(code, eventId) {
+    try { await transaction(['meta'], 'readwrite', tx => tx.objectStore('meta').put({ id: 'httpDiagnostic', code, eventId })); } catch (_) { /* Flutter event remains durable */ }
+  }
+
+  async function scheduleOutbox() {
+    try { await scope.registration.sync?.register('jackfield-outbox'); }
+    catch (_) { await diagnostic('schedulerFailure', ''); }
   }
 
   async function push(event) {
@@ -112,32 +153,52 @@
       await scope.registration.showNotification('Call unavailable', { body: 'Invitation could not be opened.' });
       return;
     }
-    const snapshot = { callId: payload.callId, caller: payload.caller, media: payload.media, state: 'ringing', actionReceipts: [] };
-    await transaction(['snapshots', 'inbox'], 'readwrite', async tx => {
-      tx.objectStore('snapshots').put({ id: payload.callId, ...snapshot });
-      tx.objectStore('inbox').put({ id: payload.eventId, invitation: payload, acknowledged: true });
+    const accepted = await transaction(['meta', 'snapshots', 'inbox'], 'readwrite', async tx => {
+      const binding = await request(tx.objectStore('meta').get('pushBinding'));
+      if (!binding || binding.installationId !== payload.installationId || binding.sessionId !== payload.sessionId) return 'binding';
+      const snapshots = tx.objectStore('snapshots');
+      const inbox = tx.objectStore('inbox');
+      if (await request(inbox.get(payload.eventId))) return 'duplicate';
+      if (await request(snapshots.get(payload.callId))) return 'duplicate';
+      snapshots.put({ id: payload.callId, callId: payload.callId, caller: payload.caller, media: payload.media,
+        installationId: payload.installationId, sessionId: payload.sessionId,
+        state: 'ringing', sequence: 0, actionReceipts: [] });
+      inbox.put({ id: payload.eventId, invitation: payload, acknowledged: true });
+      return 'accepted';
     });
+    if (accepted === 'binding') {
+      await scope.registration.showNotification('Call unavailable', { body: 'Invitation could not be opened.' });
+      return;
+    }
+    if (accepted !== 'accepted') return;
     await scope.registration.showNotification(payload.caller.displayName, {
       body: 'Incoming call', tag: payload.callId, data: { callId: payload.callId, eventId: payload.eventId },
       actions: [{ action: 'answer', title: 'Answer' }, { action: 'reject', title: 'Reject' }],
     });
-    await drainOutbox();
+    await safeDrain();
   }
 
   async function click(event) {
     event.notification.close();
     const { callId } = event.notification.data || {};
     if (!callId || !['answer', 'reject'].includes(event.action)) return;
+    const current = await transaction(['snapshots'], 'readonly', async tx => request(tx.objectStore('snapshots').get(callId)));
+    if (!current || current.state !== 'ringing') return;
+    if (current.installationId) {
+      const binding = await transaction(['meta'], 'readonly', async tx => request(tx.objectStore('meta').get('pushBinding')));
+      if (!binding || binding.installationId !== current.installationId || binding.sessionId !== current.sessionId) return;
+    }
     const actionId = scope.crypto.randomUUID();
     const eventId = scope.crypto.randomUUID();
     const now = new Date();
     const ended = event.action === 'reject';
     const wire = ended
-      ? { version: 1, type: 'ended', callId, eventId, sequence: 1, occurredAt: now.toISOString(), reason: 'rejected' }
-      : { version: 1, type: 'answer_requested', callId, actionId, eventId, sequence: 1, occurredAt: now.toISOString(), deadline: new Date(now.getTime() + 30000).toISOString() };
-    await persistEvent(wire, ended ? { callId, state: 'ended', media: 'audio', actionReceipts: [] } : null,
+      ? { version: 1, type: 'ended', callId, eventId, sequence: (current.sequence || 0) + 1, occurredAt: now.toISOString(), reason: 'rejected' }
+      : { version: 1, type: 'answer_requested', callId, actionId, eventId, sequence: (current.sequence || 0) + 1, occurredAt: now.toISOString(), deadline: new Date(now.getTime() + 30000).toISOString() };
+    await persistEvent(wire, { ...current, state: ended ? 'ended' : 'connecting', sequence: wire.sequence,
+      ...(!ended ? { actionId, actionDeadline: wire.deadline } : {}) },
       ended ? null : { id: actionId, callId, deadline: Date.parse(wire.deadline), completed: false });
-    await drainOutbox();
+    await safeDrain();
   }
 
   async function configure(callbacks) {
@@ -160,48 +221,79 @@
   }
 
   async function drainOutbox() {
-    const state = await transaction(['meta', 'outbox'], 'readonly', async tx => ({
-      config: await request(tx.objectStore('meta').get('callbackConfig')),
-      paused: await request(tx.objectStore('meta').get('authPaused')),
-      queue: await request(tx.objectStore('outbox').getAll()),
-    }));
-    if (!state.config || state.paused) return;
-    const now = Date.now();
-    const ordered = state.queue.sort((a, b) => a.createdAt - b.createdAt);
-    const firstByCall = new Set();
-    for (const item of ordered) {
-      if (firstByCall.has(item.event.callId)) continue;
-      firstByCall.add(item.event.callId);
-      if (item.nextAt > now) continue;
-      if (now - item.createdAt >= state.config.timeToLiveMs) {
-        await transaction(['outbox'], 'readwrite', tx => tx.objectStore('outbox').delete(item.id));
-        continue;
-      }
+    for (;;) {
+      const job = await transaction(['meta', 'outbox'], 'readwrite', async tx => {
+        const meta = tx.objectStore('meta');
+        const config = await request(meta.get('callbackConfig'));
+        if (!config || await request(meta.get('authPaused'))) return null;
+        const queue = (await request(tx.objectStore('outbox').getAll()))
+          .filter(item => item.state === 'pending' || item.state === 'sending')
+          .sort((a, b) => a.event.callId.localeCompare(b.event.callId) || a.event.sequence - b.event.sequence);
+        const now = Date.now();
+        const seen = new Set();
+        for (const item of queue) {
+          if (seen.has(item.event.callId)) continue;
+          if (now >= item.expiresAt) {
+            tx.objectStore('outbox').put({ ...item, state: 'terminal', outcome: 'expired', completedAt: now });
+            continue;
+          }
+          seen.add(item.event.callId);
+          if (item.state === 'sending') {
+            if (item.claimUntil > now) continue;
+          } else if (item.nextAt > now) continue;
+          const token = scope.crypto.randomUUID();
+          const claimed = { ...item, state: 'sending', claimToken: token, claimUntil: now + 30000 };
+          tx.objectStore('outbox').put(claimed);
+          return { item: claimed, config };
+        }
+        return null;
+      });
+      if (!job) return;
+      const { item, config } = job;
       let status = 0;
       let retryAfter = 0;
       try {
-        const response = await scope.fetch(state.config.endpoint, {
-          method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.config.auth.token}`, 'Idempotency-Key': item.id },
-          body: JSON.stringify(item.event),
+        const response = await scope.fetch(config.endpoint, {
+          method: 'POST', redirect: 'error',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.auth.token}`, 'Idempotency-Key': item.id },
+          body: JSON.stringify({ version: 1, event: item.event }),
         });
         status = response.status;
         const header = response.headers.get('Retry-After');
-        retryAfter = header && /^\d+$/.test(header) ? Number(header) * 1000 : 0;
+        if (header) {
+          const parsed = /^\d+$/.test(header) ? Number(header) * 1000 : Date.parse(header) - Date.now();
+          if (Number.isFinite(parsed) && parsed > 0) retryAfter = parsed;
+        }
       } catch (_) { /* network failure is retryable */ }
-      await transaction(['outbox', 'meta', 'receipts'], 'readwrite', async tx => {
-        if (status >= 200 && status < 300 || status >= 400 && status < 500 && ![401, 403, 429].includes(status)) {
-          tx.objectStore('outbox').delete(item.id);
-          tx.objectStore('receipts').put({ id: item.id, httpStatus: status });
+      await transaction(['outbox', 'meta'], 'readwrite', async tx => {
+        const outbox = tx.objectStore('outbox');
+        const current = await request(outbox.get(item.id));
+        if (!current || current.claimToken !== item.claimToken || current.state !== 'sending') return;
+        const now = Date.now();
+        const attempt = current.attempt + 1;
+        if (status >= 200 && status < 300) {
+          outbox.put({ ...current, state: 'delivered', attempt, httpStatus: status, completedAt: now });
         } else if (status === 401 || status === 403) {
           tx.objectStore('meta').put({ id: 'authPaused', value: true });
+          outbox.put({ ...current, state: 'pending', attempt, httpStatus: status, nextAt: now });
+        } else if (now >= current.expiresAt || status >= 300 && status < 500 && status !== 429) {
+          outbox.put({ ...current, state: 'terminal', attempt, httpStatus: status, outcome: now >= current.expiresAt ? 'expired' : 'httpError', completedAt: now });
         } else {
-          const attempt = item.attempt + 1;
-          const delay = Math.min(900000, retryAfter || 1000 * 2 ** Math.min(attempt - 1, 10));
-          tx.objectStore('outbox').put({ ...item, attempt, nextAt: Date.now() + delay });
+          const base = retryAfter || Math.min(900000, 1000 * 2 ** Math.min(attempt - 1, 10));
+          const delay = Math.min(900000, Math.round(base * (0.8 + Math.random() * 0.2)));
+          outbox.put({ ...current, state: 'pending', attempt, httpStatus: status, nextAt: Math.min(now + delay, current.expiresAt) });
         }
       });
-      if (status === 401 || status === 403) break;
+      if (status === 401 || status === 403) return;
+      if (status === 0 || status === 429 || status >= 500) {
+        await scheduleOutbox();
+        return;
+      }
     }
+  }
+
+  async function safeDrain() {
+    try { await drainOutbox(); } catch (_) { await diagnostic('deliveryFailure', ''); }
   }
 
   async function command(message) {
@@ -209,15 +301,39 @@
     switch (message.command) {
       case 'initialize': await configure(message.callbacks || null); return { status: 'success', value: null };
       case 'claim': return { status: 'success', value: await claim(message.owner) };
-      case 'pending': return { status: 'success', value: await pending() };
-      case 'acknowledge': await acknowledge(message.eventIds || []); return { status: 'success', value: null };
-      case 'drain': await drainOutbox(); return { status: 'success', value: null };
+      case 'pending': {
+        const events = await pending(message.owner, message.token);
+        return events ? { status: 'success', value: events } : { status: 'failure', error: { code: 'invalidState' } };
+      }
+      case 'acknowledge': return await acknowledge(message.owner, message.token, message.eventIds || [])
+        ? { status: 'success', value: null } : { status: 'failure', error: { code: 'invalidState' } };
+      case 'bindPush': {
+        if (!message.installationId || !message.sessionId) return { status: 'failure', error: { code: 'protocolFailure' } };
+        await transaction(['meta'], 'readwrite', tx => tx.objectStore('meta').put({ id: 'pushBinding', installationId: message.installationId, sessionId: message.sessionId }));
+        return { status: 'success', value: null };
+      }
+      case 'drain': await safeDrain(); return { status: 'success', value: null };
+      case 'diagnostics': {
+        const value = await transaction(['meta', 'outbox', 'inbox'], 'readonly', async tx => ({
+          httpDiagnostic: await request(tx.objectStore('meta').get('httpDiagnostic')),
+          authPaused: !!(await request(tx.objectStore('meta').get('authPaused'))),
+          pendingHttpEvents: (await request(tx.objectStore('outbox').getAll())).filter(item => ['pending', 'sending'].includes(item.state)).length,
+          pendingFlutterEvents: (await request(tx.objectStore('inbox').getAll())).filter(item => item.event && !item.acknowledged).length,
+        }));
+        return { status: 'success', value };
+      }
       case 'reportIncoming': {
         const call = message.call;
-        if (!call || !call.callId || !call.caller?.displayName || !['audio', 'video'].includes(call.media))
+        if (!call || !call.callId || !call.caller?.id || !call.caller.displayName || !['audio', 'video'].includes(call.media))
           return { status: 'failure', error: { code: 'protocolFailure' } };
         const snapshot = { callId: call.callId, state: 'ringing', media: call.media, caller: call.caller, actionReceipts: [] };
-        await transaction(['snapshots'], 'readwrite', tx => tx.objectStore('snapshots').put({ id: call.callId, ...snapshot }));
+        const created = await transaction(['snapshots'], 'readwrite', async tx => {
+          const store = tx.objectStore('snapshots');
+          if (await request(store.get(call.callId))) return false;
+          store.put({ id: call.callId, ...snapshot, sequence: 0 });
+          return true;
+        });
+        if (!created) return { status: 'failure', error: { code: 'invalidState' } };
         await scope.registration.showNotification(call.caller.displayName, { body: 'Incoming call', tag: call.callId, data: { callId: call.callId }, actions: [{ action: 'answer', title: 'Answer' }, { action: 'reject', title: 'Reject' }] });
         return { status: 'success', value: snapshot };
       }
@@ -237,10 +353,12 @@
         const snapshot = await transaction(['snapshots', 'receipts'], 'readwrite', async tx => {
           const receiptStore = tx.objectStore('receipts');
           const receipt = await request(receiptStore.get(message.actionId));
-          if (!receipt || Date.now() > receipt.deadline) return null;
+          if (!receipt) return null;
           const store = tx.objectStore('snapshots');
           const current = await request(store.get(receipt.callId));
           if (!current) return null;
+          if (receipt.completed) return current;
+          if (Date.now() > receipt.deadline || current.state !== 'connecting' || current.actionId !== message.actionId) return null;
           const next = { ...current, state: message.succeeded ? 'active' : 'ended', actionId: message.actionId,
             actionReceipts: [...(current.actionReceipts || []), { actionId: message.actionId, succeeded: message.succeeded }] };
           store.put(next);
@@ -257,6 +375,9 @@
     settings = { leaseMs: options.leaseMs || 45000, heartbeatMs: options.heartbeatMs || 15000 };
     scope.addEventListener('push', event => event.waitUntil(push(event)));
     scope.addEventListener('notificationclick', event => event.waitUntil(click(event)));
+    scope.addEventListener('sync', event => {
+      if (event.tag === 'jackfield-outbox') event.waitUntil(safeDrain());
+    });
     scope.addEventListener('message', event => {
       if (!event.data || event.data.jackfield !== 1 || !event.ports?.[0]) return;
       event.waitUntil(command(event.data).then(result => event.ports[0].postMessage({ version: 1, ...result }))

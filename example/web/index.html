@@ -43,10 +43,21 @@
   -->
   <script src="assets/packages/jackfield/web/jackfield_bridge.js"></script>
   <script>
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('jackfield_host_worker.js');
-    }
+    window.JackfieldHostWorkerRegistration = (async () => {
+      if (!('serviceWorker' in navigator)) throw new Error('service worker unavailable');
+      const url = new URL('jackfield_host_worker.js', document.baseURI);
+      const registered = await navigator.serviceWorker.register(url.href);
+      const ready = await navigator.serviceWorker.ready;
+      if (ready.scope !== registered.scope || ready.active?.scriptURL !== url.href) {
+        throw new Error('Jackfield host worker is not active for this page');
+      }
+      return ready;
+    })();
+    window.JackfieldHostWorkerRegistration.then(() => {
+      const bootstrap = document.createElement('script');
+      bootstrap.src = 'flutter_bootstrap.js';
+      document.body.appendChild(bootstrap);
+    });
   </script>
-  <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>
