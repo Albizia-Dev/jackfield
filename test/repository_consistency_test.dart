@@ -37,6 +37,16 @@ void main() {
   Future<ProcessResult> check(String script, Directory root) =>
       Process.run('dart', ['run', 'tool/$script.dart', '--root=${root.path}']);
 
+  test('Android gate generates the ignored Gradle wrapper before tests', () {
+    final script = File('tool/verify.sh').readAsStringSync();
+    final build = script.indexOf("run 'example debug APK'");
+    final unitTests = script.indexOf("run 'Android plugin unit tests'");
+
+    expect(build, isNonNegative);
+    expect(unitTests, isNonNegative);
+    expect(build, lessThan(unitTests));
+  });
+
   test('capability checker rejects unsupported platform registration', () async {
     final root = await isolatedCopy();
     final file = File('${root.path}/pubspec.yaml');

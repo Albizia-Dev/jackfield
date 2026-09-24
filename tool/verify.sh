@@ -46,8 +46,8 @@ android_gate() {
   [[ -n "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}" ]] || { notice 'Android SDK path is required.' >&2; exit 1; }
   run 'Flutter dependencies' flutter pub get
   run 'example dependencies' bash -c 'cd example && flutter pub get'
-  run 'Android plugin unit tests' bash -c 'cd example/android && ./gradlew :jackfield:testDebugUnitTest --console=plain'
   run 'example debug APK' bash -c 'cd example && flutter build apk --debug --no-pub'
+  run 'Android plugin unit tests' bash -c 'cd example/android && ./gradlew :jackfield:testDebugUnitTest --console=plain'
 }
 
 apple_gate() {
