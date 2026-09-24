@@ -14,3 +14,7 @@ pubspec.lock
 example/linux/flutter/generated_*
 example/windows/flutter/generated_*
 example/macos/Flutter/GeneratedPluginRegistrant.swift
+example/android/app/google-services.json
+example/lib/firebase_options.dart
+example/firebase.json
+example/firebase-debug.log

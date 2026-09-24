@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/Albizia-Dev/jackfield/server_example/internal/callbacks"
 	"github.com/Albizia-Dev/jackfield/server_example/internal/calls"
@@ -19,18 +20,53 @@ type PushSender interface {
 }
 
 type router struct {
-	store    *calls.Store
-	push     PushSender
-	apiToken string
+	store           *calls.Store
+	push            PushSender
+	apiToken        string
+	deviceMu        sync.RWMutex
+	testDeviceToken string
 }
 
 func NewRouter(store *calls.Store, push PushSender, apiToken, callbackToken string) http.Handler {
 	r := &router{store: store, push: push, apiToken: apiToken}
 	mux := http.NewServeMux()
+	mux.Handle("PUT /devices/test", http.HandlerFunc(r.registerTestDevice))
 	mux.Handle("POST /calls", http.HandlerFunc(r.create))
 	mux.Handle("POST /calls/{callId}/end", http.HandlerFunc(r.end))
 	mux.Handle("POST /callbacks/jackfield", callbacks.NewHandler(store, callbackToken))
 	return mux
+}
+
+func (r *router) registerTestDevice(w http.ResponseWriter, request *http.Request) {
+	if !r.authorized(request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	var input struct {
+		FCMToken string `json:"fcmToken"`
+	}
+	request.Body = http.MaxBytesReader(w, request.Body, 64<<10)
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil || strings.TrimSpace(input.FCMToken) == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	r.deviceMu.Lock()
+	r.testDeviceToken = input.FCMToken
+	r.deviceMu.Unlock()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (r *router) registeredTestDevice() string {
+	r.deviceMu.RLock()
+	defer r.deviceMu.RUnlock()
+	return r.testDeviceToken
 }
 
 func (r *router) authorized(request *http.Request) bool {
@@ -53,12 +89,19 @@ func (r *router) create(w http.ResponseWriter, request *http.Request) {
 	request.Body = http.MaxBytesReader(w, request.Body, 64<<10)
 	decoder := json.NewDecoder(request.Body)
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&input); err != nil || input.CallID == "" || input.Caller.ID == "" || input.Caller.DisplayName == "" || (input.Media != "audio" && input.Media != "video") || input.FCMToken == "" {
+	if err := decoder.Decode(&input); err != nil || input.CallID == "" || input.Caller.ID == "" || input.Caller.DisplayName == "" || (input.Media != "audio" && input.Media != "video") {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if input.FCMToken == "" {
+		input.FCMToken = r.registeredTestDevice()
+	}
+	if input.FCMToken == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}

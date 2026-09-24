@@ -73,6 +73,27 @@ func TestCreateAndRemoteEnd(t *testing.T) {
 	}
 }
 
+func TestRegisteredTestDeviceReceivesCallWithoutTokenInEveryRequest(t *testing.T) {
+	store := calls.NewStore()
+	push := &fakePush{}
+	router := NewRouter(store, push, "api-secret", "callback-secret")
+	put := httptest.NewRequest(http.MethodPut, "/devices/test", strings.NewReader(`{"fcmToken":"registered-device-token"}`))
+	put.Header.Set("Authorization", "Bearer api-secret")
+	registered := httptest.NewRecorder()
+	router.ServeHTTP(registered, put)
+	if registered.Code != http.StatusNoContent {
+		t.Fatalf("register returned %d", registered.Code)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/calls", strings.NewReader(`{"callId":"call-registered","caller":{"id":"person-1","displayName":"Alice"},"media":"audio"}`))
+	request.Header.Set("Authorization", "Bearer api-secret")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated || push.incoming != 1 || push.token != "registered-device-token" {
+		t.Fatalf("create: %d, %#v", response.Code, push)
+	}
+}
+
 func TestFailedPushCanBeRetriedWithSameCallID(t *testing.T) {
 	store := calls.NewStore()
 	push := &fakePush{incomingErr: errors.New("provider unavailable")}
