@@ -47,22 +47,59 @@ void main() {
     expect(build, lessThan(unitTests));
   });
 
-  test('CocoaPods source sets include shared EventStore dependencies', () {
-    for (final platform in <String>['ios', 'macos']) {
+  test('Apple source sets include shared EventStore dependencies', () {
+    for (final root in <String>[
+      'ios/Classes',
+      'macos/Classes',
+      'ios/jackfield/Sources/jackfield',
+      'macos/jackfield/Sources/jackfield',
+    ]) {
       for (final source in <String>[
         'CallbackQueue.swift',
         'EventStore.swift',
         'HTTPDispatchCoordination.swift',
         'WireEnvelope.swift',
       ]) {
-        final file = File('$platform/Classes/$source');
-        expect(
-          file.existsSync(),
-          isTrue,
-          reason: '$platform CocoaPods sources are missing $source',
-        );
+        final file = File('$root/$source');
+        expect(file.existsSync(), isTrue, reason: '$root is missing $source');
       }
     }
+    for (final root in <String>[
+      'ios/Classes',
+      'ios/jackfield/Sources/jackfield',
+    ]) {
+      expect(
+        File('$root/DiagnosticErrorState.swift').existsSync(),
+        isTrue,
+        reason: '$root is missing DiagnosticErrorState.swift',
+      );
+    }
+  });
+
+  test('Android toolchain matches the supported consumer baseline', () {
+    final plugin = File('android/build.gradle.kts').readAsStringSync();
+    final example = File(
+      'example/android/settings.gradle.kts',
+    ).readAsStringSync();
+    final wrapper = File(
+      'example/android/gradle/wrapper/gradle-wrapper.properties',
+    ).readAsStringSync();
+
+    expect(plugin, contains('val kotlinVersion = "2.1.0"'));
+    expect(plugin, contains('com.android.tools.build:gradle:8.9.1'));
+    expect(
+      plugin,
+      contains('id("com.google.devtools.ksp") version "2.1.0-1.0.29"'),
+    );
+    for (final artifact in <String>['room-runtime', 'room-ktx', 'room-compiler']) {
+      expect(plugin, contains('androidx.room:$artifact:2.7.2'));
+    }
+    expect(example, contains('id("com.android.application") version "8.9.1"'));
+    expect(
+      example,
+      contains('id("org.jetbrains.kotlin.android") version "2.1.0"'),
+    );
+    expect(wrapper, contains('gradle-8.11.1-all.zip'));
   });
 
   test('capability checker rejects unsupported platform registration', () async {
