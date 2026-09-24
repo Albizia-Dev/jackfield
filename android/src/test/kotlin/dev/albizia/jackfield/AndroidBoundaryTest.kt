@@ -14,6 +14,13 @@ import kotlin.test.*
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class AndroidBoundaryTest {
+    @Test fun `runtime initializes before the first platform query`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val runtime = JackfieldRuntime.get(context)
+
+        assertEquals("android", runtime.controller.capabilities()["platform"])
+    }
+
     @Test fun `protected configuration survives reopen without plaintext on disk`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val key = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()

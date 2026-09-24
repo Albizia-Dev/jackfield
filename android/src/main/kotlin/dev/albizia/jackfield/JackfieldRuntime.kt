@@ -30,7 +30,8 @@ internal class JackfieldRuntime private constructor(context: Context) {
                 @Suppress("UNREACHABLE_CODE") false
             } ?: false
         }
-        CallbackScheduler.registerRecovery(context)
+        try { CallbackScheduler.registerRecovery(context) }
+        catch (error: Exception) { controller.recordError(error) }
         scope.launch { try { recover() } catch (error: Exception) { controller.recordError(error) } }
     }
     suspend fun answer(callId: String): dev.albizia.jackfield.store.CallEntity {
