@@ -7,9 +7,9 @@ void main() {
     final copy = await Directory.systemTemp.createTemp('jackfield-contract-');
     for (final path in <String>[
       'pubspec.yaml',
-      'docs/capabilities.md',
-      'docs/validation-matrix.md',
-      'docs/ci.md',
+      'doc/capabilities.md',
+      'doc/validation-matrix.md',
+      'doc/ci.md',
       'test/fixtures/event_answer_requested_v1.json',
       'test/fixtures/event_ended_v1.json',
       'test/fixtures/callback_answer_requested_v1.json',
@@ -37,9 +37,23 @@ void main() {
   Future<ProcessResult> check(String script, Directory root) =>
       Process.run('dart', ['run', 'tool/$script.dart', '--root=${root.path}']);
 
+  test('capability checker rejects unsupported platform registration', () async {
+    final root = await isolatedCopy();
+    final file = File('${root.path}/pubspec.yaml');
+    file.writeAsStringSync(
+      file.readAsStringSync().replaceFirst(
+        '      web:\n',
+        '      windows:\n        pluginClass: JackfieldPluginCApi\n      web:\n',
+      ),
+    );
+    final result = await check('check_capability_matrix', root);
+    expect(result.exitCode, isNonZero);
+    expect('${result.stdout}${result.stderr}', contains('registrations'));
+  });
+
   test('capability checker rejects a supported Windows claim', () async {
     final root = await isolatedCopy();
-    final file = File('${root.path}/docs/capabilities.md');
+    final file = File('${root.path}/doc/capabilities.md');
     file.writeAsStringSync(
       file.readAsStringSync().replaceFirst(
         'Windows | Task 11 отложен: только scaffold',
@@ -57,7 +71,7 @@ void main() {
 
   test('capability checker rejects an incomplete Android claim', () async {
     final root = await isolatedCopy();
-    final file = File('${root.path}/docs/capabilities.md');
+    final file = File('${root.path}/doc/capabilities.md');
     file.writeAsStringSync(
       file.readAsStringSync().replaceFirst(
         'Android | Реализован:',

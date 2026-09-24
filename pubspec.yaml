@@ -1,7 +1,14 @@
 name: jackfield
-description: "Typed system call presentation with independent action and event acknowledgements."
+description: "Typed call presentation and durable action delivery for Flutter on Android, iOS, macOS, and Web."
 version: 0.0.1
-homepage:
+homepage: https://github.com/Albizia-Dev/jackfield
+repository: https://github.com/Albizia-Dev/jackfield
+issue_tracker: https://github.com/Albizia-Dev/jackfield/issues
+topics:
+  - calls
+  - voip
+  - callkit
+  - notifications
 
 environment:
   sdk: ">=3.9.0 <4.0.0"
@@ -46,12 +53,8 @@ flutter:
         pluginClass: JackfieldPlugin
       ios:
         pluginClass: JackfieldPlugin
-      linux:
-        pluginClass: JackfieldPlugin
       macos:
         pluginClass: JackfieldPlugin
-      windows:
-        pluginClass: JackfieldPluginCApi
       web:
         pluginClass: JackfieldWeb
         fileName: jackfield_web.dart

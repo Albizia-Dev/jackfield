@@ -27,7 +27,8 @@ HTTPS заголовки проверяются в `HttpsTransportTest`. Общ�
 значениям, без зависимости от порядка полей и форматирования файла.
 
 Windows и Linux были отложены; зелёные scaffold workflows не доказывают работу
-вызовов или системного UI. Все device/provider/OS notification сценарии
+вызовов или системного UI. В 0.0.1 эти платформы не зарегистрированы в
+`pubspec.yaml` и не заявлены как поддерживаемые. Все device/provider/OS notification сценарии
 требуют [ручной проверки](manual-validation.md). Автоматическая проверка
 секретов ловит известные форматы, но не заменяет review или secret manager.
 
@@ -40,3 +41,5 @@ Windows и Linux были отложены; зелёные scaffold workflows н
 `jackfield-implementation`/`jackfield`; это отдельный не пройденный gate,
 даже если pod lint и Swift unit успешны. Результаты CI фиксируются в
 [матрице валидации](validation-matrix.md) только после реального запуска.
+Отдельный macOS example build/run прошёл в detached checkout с basename
+`jackfield`; это не подменяет iOS simulator build или удалённый CI.

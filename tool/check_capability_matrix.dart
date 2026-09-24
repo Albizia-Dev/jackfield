@@ -48,16 +48,16 @@ void main(List<String> arguments) {
     r'^      ([a-z]+):\s*$',
     multiLine: true,
   ).allMatches(platformBlock).map((match) => match.group(1)!).toSet();
-  if (registrations.length != _platforms.length ||
-      !registrations.containsAll(_platforms)) {
+  if (registrations.length != _implemented.length ||
+      !registrations.containsAll(_implemented)) {
     errors.add(
-      'pubspec platform registrations differ from ${_platforms.join(', ')}: $registrations',
+      'pubspec platform registrations differ from ${_implemented.join(', ')}: $registrations',
     );
   }
 
   for (final path in <String>[
-    'docs/capabilities.md',
-    'docs/validation-matrix.md',
+    'doc/capabilities.md',
+    'doc/validation-matrix.md',
   ]) {
     final contents = read(path);
     for (final platform in _platforms) {
@@ -94,7 +94,7 @@ void main(List<String> arguments) {
     }
   }
 
-  final ci = read('docs/ci.md');
+  final ci = read('doc/ci.md');
   for (final entry in _workflowStages.entries) {
     final path = '.github/workflows/${entry.key}.yml';
     final workflow = read(path);
@@ -106,7 +106,7 @@ void main(List<String> arguments) {
       errors.add('$path: missing executable command $command');
     }
     if (!ci.contains('| `${entry.key}.yml` | `$command` |')) {
-      errors.add('docs/ci.md: ${entry.key}.yml must document $command');
+      errors.add('doc/ci.md: ${entry.key}.yml must document $command');
     }
     if (!workflow.contains('contents: read')) {
       errors.add('$path: requires read-only contents permission');
