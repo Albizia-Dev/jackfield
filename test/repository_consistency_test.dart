@@ -47,6 +47,24 @@ void main() {
     expect(build, lessThan(unitTests));
   });
 
+  test('CocoaPods source sets include shared EventStore dependencies', () {
+    for (final platform in <String>['ios', 'macos']) {
+      for (final source in <String>[
+        'CallbackQueue.swift',
+        'EventStore.swift',
+        'HTTPDispatchCoordination.swift',
+        'WireEnvelope.swift',
+      ]) {
+        final file = File('$platform/Classes/$source');
+        expect(
+          file.existsSync(),
+          isTrue,
+          reason: '$platform CocoaPods sources are missing $source',
+        );
+      }
+    }
+  });
+
   test('capability checker rejects unsupported platform registration', () async {
     final root = await isolatedCopy();
     final file = File('${root.path}/pubspec.yaml');
