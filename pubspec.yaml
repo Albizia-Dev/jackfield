@@ -1,6 +1,6 @@
 name: jackfield
 description: "Typed call presentation and durable action delivery for Flutter on Android, iOS, macOS, and Web."
-version: 0.0.1
+version: 0.0.2
 homepage: https://github.com/Albizia-Dev/jackfield
 repository: https://github.com/Albizia-Dev/jackfield
 issue_tracker: https://github.com/Albizia-Dev/jackfield/issues

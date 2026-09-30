@@ -2,13 +2,13 @@
 
 Jackfield is a Flutter plugin for presenting calls through platform UI and delivering call actions durably. It provides typed calls, events, capabilities, diagnostics, and independent acknowledgements for native actions, Flutter events, and optional HTTPS callbacks.
 
-Version **0.0.1 is an experimental initial release** for Android, iOS, macOS, and Web. Windows and Linux source scaffolds remain in the repository, but the plugin does not register or support those platforms. Real device, push provider, and callback delivery still need host-specific validation; see the [validation matrix](doc/validation-matrix.md) and [release checklist](doc/release-checklist.md).
+Version **0.0.2 is an experimental release** for Android, iOS, macOS, and Web. Windows and Linux source scaffolds remain in the repository, but the plugin does not register or support those platforms. Manual incoming/outgoing/end flows have been exercised on Android 15 and iOS 17.3.1 devices; push-provider, lock-screen, background, and callback delivery still need host-specific validation. See the [validation matrix](doc/validation-matrix.md) and [release checklist](doc/release-checklist.md).
 
 Jackfield owns local call state and platform presentation. Your application owns authentication, server call state, signaling, and audio/video. The optional Go/FCM [manual server](server_example/README.md) is independent of the plugin runtime.
 
 ## Install and configure
 
-Add `jackfield: ^0.0.1` to your application's `pubspec.yaml`, then import `package:jackfield/jackfield.dart`. The minimum versions are Flutter 3.35 and Dart 3.9, Android API 26, iOS 13, and macOS 11. Follow the host setup guides for [Android](doc/android.md), [iOS](doc/ios.md), [macOS](doc/macos.md), or [Web](doc/web.md). Adapter authors can use `jackfield_platform_interface.dart`, `jackfield_method_channel.dart`, and `jackfield_web.dart`; `WireCodec` belongs to the adapter interface, not the application import.
+Add `jackfield: ^0.0.2` to your application's `pubspec.yaml`, then import `package:jackfield/jackfield.dart`. The minimum versions are Flutter 3.35 and Dart 3.9, Android API 26, iOS 13, and macOS 11. Follow the host setup guides for [Android](doc/android.md), [iOS](doc/ios.md), [macOS](doc/macos.md), or [Web](doc/web.md). Adapter authors can use `jackfield_platform_interface.dart`, `jackfield_method_channel.dart`, and `jackfield_web.dart`; `WireCodec` belongs to the adapter interface, not the application import.
 
 ```dart
 import 'package:jackfield/jackfield.dart';

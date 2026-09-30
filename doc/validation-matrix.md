@@ -1,9 +1,9 @@
 # Матрица проверки платформ
 
-**0.0.1 — экспериментальный выпуск для четырёх платформ.** На исходном HEAD
-`ce1d0f9` реализованы и зарегистрированы Android, iOS, macOS и Web.
+**0.0.2 — экспериментальный выпуск для четырёх платформ.** Реализованы и
+зарегистрированы Android, iOS, macOS и Web.
 Windows/Linux существуют лишь как исходные scaffolds, не зарегистрированы в
-pubspec и не поддерживаются в 0.0.1. Статус адаптера не равен результату
+pubspec и не поддерживаются в 0.0.2. Статус адаптера не равен результату
 ручного прогона. Удалённые GitHub Actions runs не подтверждены; ссылки на них
 не зафиксированы. Матрица учитывает локальный `tool/verify.sh` от 2026-09-24
 и более поздний macOS build/run в checkout с правильным именем. Команды и смысл
@@ -21,12 +21,12 @@ test не способен подтвердить отсутствующую ф�
 
 | Платформа | Адаптер | Автоматические проверки | Ручные OS/device/provider проверки |
 | --- | --- | --- | --- |
-| Android | Реализован | Свежий aggregate: Kotlin/Robolectric unit, native callback fixture и debug APK прошли; remote CI not run | Не подтверждены FCM, lock screen, DND, force-stop и OEM на устройстве |
-| iOS | Реализован | Свежий aggregate: Swift 36/36 и pod lint прошли; iOS simulator build остановился до source compilation из-за SwiftPM identity; remote CI not run | Не подтверждены APNs/PushKit/CallKit, lock screen и завершённый процесс на устройстве |
+| Android | Реализован | Kotlin/Robolectric unit, native callback fixture и debug APK прошли; remote CI not run | Incoming/outgoing/end прошли на Android 15; не подтверждены FCM, lock screen, DND, force-stop и OEM |
+| iOS | Реализован | Swift tests и pod lint прошли; подписанная device-сборка прошла; remote CI not run | Incoming/outgoing/end прошли на iPad с iOS 17.3.1; не подтверждены APNs/PushKit, lock screen и завершённый процесс |
 | Web | Реализован | Свежий aggregate: worker 27/27, JS/Wasm release builds и smoke прошли; remote CI not run | Не подтверждены Web Push, закрытая вкладка, browser scheduling и notification interaction |
 | macOS | Реализован и зарегистрирован | Swift 36/36 и pod lint прошли в aggregate; macOS example build/run позднее прошёл в detached checkout с basename `jackfield`; remote CI не подтверждён | Не подтверждены реальные notification actions, фоновая доставка и provider сценарии |
-| Windows | Не реализован и не зарегистрирован: Task 11 отложен | `windows-scaffold` проверил только исходный scaffold/contract; remote CI не подтверждён | Native call behavior и OS UI не проверены; платформа не поддерживается в 0.0.1 |
-| Linux | Не реализован и не зарегистрирован: Task 12 отложен | `linux-scaffold` проверил только исходный scaffold/contract; remote CI не подтверждён | Native call behavior и OS UI не проверены; платформа не поддерживается в 0.0.1 |
+| Windows | Не реализован и не зарегистрирован: Task 11 отложен | `windows-scaffold` проверил только исходный scaffold/contract; remote CI не подтверждён | Native call behavior и OS UI не проверены; платформа не поддерживается в 0.0.2 |
+| Linux | Не реализован и не зарегистрирован: Task 12 отложен | `linux-scaffold` проверил только исходный scaffold/contract; remote CI не подтверждён | Native call behavior и OS UI не проверены; платформа не поддерживается в 0.0.2 |
 
 Предыдущий aggregate выполнил Dart format/analyze, 74/74 package tests, example
 analyze/25/25 tests, 248/248 публичных DartDoc, consistency fixtures,

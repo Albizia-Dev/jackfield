@@ -1,3 +1,16 @@
+## 0.0.2 — 2026-09-30
+
+Fix Android call presentation by running CallStyle notifications from a
+phone-call foreground service, and keep the public API available when host
+WorkManager initialization is absent. Native Android and Apple failures now
+include dense private platform logging while the Dart API continues to expose
+sanitized typed failures.
+
+The manual example adds an Android Firebase/FCM stand without adding Firebase
+to the plugin runtime. Incoming, outgoing, and end flows were exercised on an
+Android 15 device and an iPad running iOS 17.3.1; push-provider, lock-screen,
+DND, force-stop, and background-delivery behavior remain separate host gates.
+
 ## 0.0.1 — 2026-09-25
 
 Initial experimental release with typed call and event APIs, durable replay,

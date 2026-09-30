@@ -1,14 +1,16 @@
-# Проверка экспериментального выпуска Jackfield 0.0.1
+# Проверка экспериментального выпуска Jackfield 0.0.2
 
-**Статус: 0.0.1 готовится как ограниченный экспериментальный выпуск, не как
-подтверждённый production-выпуск.** На текущем исходном HEAD `ce1d0f9`
-реализованы и зарегистрированы Android, iOS, macOS и Web. Windows и Linux
+**Статус: 0.0.2 — ограниченный экспериментальный выпуск, не
+подтверждённый production-выпуск.** В нём реализованы и зарегистрированы
+Android, iOS, macOS и Web. Windows и Linux
 остались в исходниках как незавершённые scaffolds, но удалены из Flutter plugin
-registration и не поддерживаются в 0.0.1. Локальный aggregate от 2026-09-24
+registration и не поддерживаются в 0.0.2. Локальный aggregate от 2026-09-24
 остановился на iOS example build до компиляции исходников из-за SwiftPM identity
 имени worktree `jackfield-implementation`. Позднее macOS example build/run
 прошёл в отдельном detached checkout с basename `jackfield`; это подтверждает
-именно macOS host slice, а не полный aggregate или device/provider delivery.
+именно macOS host slice, а не полный aggregate или provider delivery.
+Позднее ручные incoming/outgoing/end прошли на Android 15 и iPad с iOS 17.3.1;
+FCM/APNs, lock screen, DND, force-stop и фоновые режимы этим не подтверждены.
 На релизных правках поверх `ce1d0f9` локальные Flutter tests прошли 75/75,
 `flutter analyze` сообщил `No issues found`, форматирование и проверка
 capability/workflow contract прошли.
@@ -17,8 +19,8 @@ capability/workflow contract прошли.
 
 | Требование | Подтверждено в коде/локальных тестах | Неподтверждённая граница |
 | --- | --- | --- |
-| Один типизированный Flutter-пакет и единый API | `pubspec.yaml` регистрирует четыре реализованные платформы; `Jackfield.instance` предоставляет команды, события, diagnostics и capabilities; wire v1 проверен canonical fixtures | Windows/Linux остаются незарегистрированным scaffold и не входят в 0.0.1 |
-| Входящий и исходящий звонок, системное представление, действия | Android, iOS и macOS имеют оба потока и платформенные unit tests; Web worker проверяет входящий и notification actions; неподдерживаемые функции честно не заявляются в capabilities | Web outgoing, iOS reject и mute/hold требуют реализации либо согласованного изменения исходного контракта; работа заявленных действий в реальном системном UI не проверена |
+| Один типизированный Flutter-пакет и единый API | `pubspec.yaml` регистрирует четыре реализованные платформы; `Jackfield.instance` предоставляет команды, события, diagnostics и capabilities; wire v1 проверен canonical fixtures | Windows/Linux остаются незарегистрированным scaffold и не входят в 0.0.2 |
+| Входящий и исходящий звонок, системное представление, действия | Android, iOS и macOS имеют оба потока и платформенные unit tests; ручные incoming/outgoing/end прошли на Android 15 и iOS 17.3.1; Web worker проверяет входящий и notification actions | Web outgoing, iOS reject и mute/hold требуют реализации либо согласованного изменения исходного контракта; provider/background сценарии не проверены |
 | Координация доступной системной аудиосессии | Адаптеры оставляют медиатранспорт приложению; Android интегрируется с Core-Telecom, iOS с CallKit | В коде нет явной координации audio focus/`AVAudioSession` или её публичного контракта; macOS guide прямо сообщает об отсутствии управления аудиосессией. Это функциональный пробел, а не пропущенный device test |
 | Долговечный replay, монотонный `sequence` внутри `callId`, idempotency | Dart journal/state-machine tests, Android Room/reopen, Swift SQLite/reopen и Web IndexedDB/worker tests покрывают сохранение, порядок и повторы | Остановка Flutter, смерть процесса, миграции и повторный запуск на целевых устройствах/браузерах остаются ручным gate |
 | Отдельные `completeAction`, Flutter ACK и HTTP receipt | Dart/native/worker tests проверяют независимость; HTTP success не подтверждает Flutter inbox; action receipts сохраняются | Нужен сквозной опыт с реальным действием ОС, signal/media приложением и callback сервером |
@@ -56,14 +58,14 @@ build из-за SwiftPM identity; macOS example build в этом общем п�
   явно согласовать изменение объёма будущего выпуска и обновить публичный
   контракт. Текущие `unsupported`/отсутствие feature являются честным
   поведением API, но не выполнением этих исходных требований.
-- Windows/Linux не входят в 0.0.1: перед будущей регистрацией завершить native
+- Windows/Linux не входят в 0.0.2: перед будущей регистрацией завершить native
   adapters и проверить реальные вызовы на этих платформах.
-- Собрать iOS simulator в checkout с корректной SwiftPM identity; получить
+- Получить
   реальные GitHub Actions run URL и результаты для
   Dart, Android, Apple, Web, Go, Windows/Linux scaffold и secret scan.
-- Протестировать уже реализованные действия Android и iOS на устройствах:
-  FCM/APNs/PushKit, входящий и исходящий звонок, ответ/завершение и Android
-  reject, lock screen, DND, force-stop, процесс без Flutter, expiry и OEM
+- Продолжить device-проверки Android и iOS:
+  FCM/APNs/PushKit, ответ из системного UI, Android reject, lock screen, DND,
+  force-stop, процесс без Flutter, expiry и OEM
   notification policy. iOS reject проверять только после его реализации.
 - Протестировать macOS host notifications/actions и фоновый запуск; Web Push,
   закрытую вкладку, Service Worker eviction, Background/Periodic Sync и
