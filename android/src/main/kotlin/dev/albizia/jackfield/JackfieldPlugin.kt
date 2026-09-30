@@ -3,6 +3,7 @@ package dev.albizia.jackfield
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
@@ -45,6 +46,7 @@ class JackfieldPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 withContext(Dispatchers.Main) { result.success(value) }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) {
+                Log.e("Jackfield", "${call.method} failed", error)
                 withContext(Dispatchers.Main) {
                     if (call.method in AndroidChannelBackend.queries) result.error(Wire.code(error), null, null)
                     else result.success(Wire.failure(error))

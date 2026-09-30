@@ -1,5 +1,6 @@
 package dev.albizia.jackfield
 
+import android.util.Log
 import kotlinx.coroutines.CancellationException
 
 /** Pure channel routing; storage/presentation work runs on the plugin's IO scope. */
@@ -37,6 +38,7 @@ internal class AndroidChannelBackend(private val controller: CallController) {
             }
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (error: Exception) {
+            Log.e("Jackfield", "$method failed", error)
             controller.recordError(error)
             if (method in queries) throw JackfieldFailure(Wire.code(error))
             return Wire.failure(error)

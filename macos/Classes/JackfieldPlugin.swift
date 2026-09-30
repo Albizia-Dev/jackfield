@@ -112,6 +112,7 @@ public final class JackfieldPlugin: NSObject, @preconcurrency FlutterPlugin {
           result(Self.failure("unsupported"))
         }
       } catch {
+        Self.logFailure(call.method, error)
         let code = Self.code(error)
         self.lastError = code
         if call.method == "capabilities" || call.method == "diagnostics" {
@@ -150,7 +151,12 @@ public final class JackfieldPlugin: NSObject, @preconcurrency FlutterPlugin {
       return
     }
     Task { @MainActor [weak self] in
-      let pending = try? await store.pendingFlutter()
+      let pending: [WireEnvelope]?
+      do { pending = try await store.pendingFlutter() }
+      catch {
+        Self.logFailure("events.replay", error)
+        pending = nil
+      }
       guard let self, self.replayBuffer.isCurrent(generation) else { return }
       guard let pending else {
         self.failReplay(generation: generation, sink: sink)
@@ -201,6 +207,12 @@ public final class JackfieldPlugin: NSObject, @preconcurrency FlutterPlugin {
 
   private static func success(_ value: Any) -> [String: Any] { ["version": 1, "status": "success", "value": value] }
   private static func failure(_ code: String) -> [String: Any] { ["version": 1, "status": "failure", "error": ["code": code]] }
+  private static func logFailure(_ operation: String, _ error: Error) {
+    let native = error as NSError
+    NSLog("[Jackfield] %@ failed; type=%@ domain=%@ code=%ld description=%@\n%@",
+          operation, String(reflecting: type(of: error)), native.domain, native.code,
+          native.localizedDescription, Thread.callStackSymbols.joined(separator: "\n"))
+  }
   private static func code(_ error: Error) -> String {
     if let local = error as? MacOSCallError, case .permissionDenied = local { return "permissionDenied" }
     switch error as? JackfieldCoreError {

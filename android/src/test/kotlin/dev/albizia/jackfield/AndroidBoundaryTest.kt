@@ -1,9 +1,12 @@
 package dev.albizia.jackfield
 
 import android.app.NotificationManager
+import android.app.Application
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import dev.albizia.jackfield.http.*
+import org.robolectric.Robolectric
+import org.robolectric.Shadows
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -47,15 +50,19 @@ class AndroidBoundaryTest {
     }
 
     @Test fun `notification fallback posts actionable call style and removes exact call`() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
+        val context = ApplicationProvider.getApplicationContext<Application>()
         val notifications = CallNotifications(context)
         notifications.show(call(state = "ringing"))
+        val show = Shadows.shadowOf(context).nextStartedService
+        val service = Robolectric.buildService(JackfieldCallService::class.java, show).create().get()
+        service.onStartCommand(show, 0, 1)
         val manager = context.getSystemService(NotificationManager::class.java)
         val shown = manager.activeNotifications.single()
         assertEquals("call", shown.notification.category)
         assertEquals(2, shown.notification.actions.size)
         assertEquals("android.app.Notification\$CallStyle", shown.notification.extras.getString("android.template"))
         notifications.end("call-1")
+        service.onStartCommand(JackfieldCallService.endIntent(context, "call-1"), 0, 2)
         assertTrue(manager.activeNotifications.isEmpty())
     }
 }

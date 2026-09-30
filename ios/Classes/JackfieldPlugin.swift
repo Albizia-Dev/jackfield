@@ -105,6 +105,7 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
         default: result(Self.failure("unsupported"))
         }
       } catch {
+        Self.logFailure(call.method, error)
         let code = Self.code(error)
         self.diagnosticError.record(code)
         if call.method == "capabilities" || call.method == "diagnostics" { result(FlutterError(code: code, message: nil, details: nil)) }
@@ -130,7 +131,11 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
   private func startPushRegistry() {
     registry = JackfieldPushRegistry(incoming: { [weak self] callId, callerId, callerName, media, completion in
       guard let self, let controller = self.controller else { completion(); return }
-      Task { _ = try? await controller.reportIncoming(callId: callId, callerId: callerId, callerName: callerName, media: media); completion() }
+      Task {
+        do { _ = try await controller.reportIncoming(callId: callId, callerId: callerId, callerName: callerName, media: media) }
+        catch { Self.logFailure("push.reportIncomingCall", error) }
+        completion()
+      }
     }, tokenChanged: { [weak self] value, removed in
       guard let self else { return }
       let prior = self.pushToken
@@ -167,6 +172,12 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
   }
   private static func success(_ value: Any) -> [String: Any] { ["version": 1, "status": "success", "value": value] }
   private static func failure(_ code: String) -> [String: Any] { ["version": 1, "status": "failure", "error": ["code": code]] }
+  private static func logFailure(_ operation: String, _ error: Error) {
+    let native = error as NSError
+    NSLog("[Jackfield] %@ failed; type=%@ domain=%@ code=%ld description=%@\n%@",
+          operation, String(reflecting: type(of: error)), native.domain, native.code,
+          native.localizedDescription, Thread.callStackSymbols.joined(separator: "\n"))
+  }
   private static func code(_ error: Error) -> String {
     switch error as? JackfieldCoreError {
     case .protocolFailure: return "protocolFailure"
