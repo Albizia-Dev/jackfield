@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import dev.albizia.jackfield.JackfieldRuntime
+import dev.albizia.jackfield.JackfieldLog
 import dev.albizia.jackfield.Wire
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -14,19 +15,33 @@ import org.json.JSONObject
 class JackfieldPushReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val pending = goAsync()
-        val runtime = try { JackfieldRuntime.get(context) } catch (_: Exception) { pending.finish(); return }
+        JackfieldLog.info("push.received", detail = "action=${intent.action}")
+        val runtime = try { JackfieldRuntime.get(context) } catch (error: Exception) {
+            JackfieldLog.error("push.runtime_failed", error = error)
+            pending.finish()
+            return
+        }
         runtime.scope.launch {
             try {
                 val payload = Wire.jsonMap(JSONObject(intent.getStringExtra("payload") ?: Wire.fail()))
                 when (intent.action) {
-                    ACTION_INCOMING -> runtime.controller.reportIncoming(payload)
+                    ACTION_INCOMING -> {
+                        val call = runtime.controller.reportIncoming(payload)
+                        JackfieldLog.info("push.incoming_presented", call.callId)
+                    }
                     ACTION_END -> {
                         val data = Wire.request(payload, setOf("callId", "reason"))
-                        runtime.controller.endCall(Wire.string(data["callId"]), Wire.reason(data["reason"]))
+                        val callId = Wire.string(data["callId"])
+                        val reason = Wire.reason(data["reason"])
+                        runtime.controller.endCall(callId, reason)
+                        JackfieldLog.info("push.end_applied", callId, "reason=$reason")
                     }
                     else -> Wire.fail()
                 }
-            } catch (error: Exception) { runtime.controller.recordError(error) }
+            } catch (error: Exception) {
+                JackfieldLog.error("push.processing_failed", error = error)
+                runtime.controller.recordError(error)
+            }
             finally { pending.finish() }
         }
     }
@@ -53,6 +68,7 @@ class JackfieldActionReceiver : BroadcastReceiver() {
         runtime.scope.launch {
             try {
                 val id = Wire.string(intent.getStringExtra("callId"))
+                JackfieldLog.info("action.received", id, "action=${intent.action}")
                 when (intent.action) {
                     "answer" -> {
                         runtime.answer(id, 30_000)
@@ -61,12 +77,22 @@ class JackfieldActionReceiver : BroadcastReceiver() {
                             launch.putExtra("jackfieldCallId", id)
                             context.startActivity(launch)
                         }
+                        JackfieldLog.info("action.answer_completed", id)
                     }
-                    "reject" -> runtime.controller.endCall(id, "rejected")
-                    "end" -> runtime.controller.endCall(id, "local")
+                    "reject" -> {
+                        runtime.controller.endCall(id, "rejected")
+                        JackfieldLog.info("action.reject_completed", id)
+                    }
+                    "end" -> {
+                        runtime.controller.endCall(id, "local")
+                        JackfieldLog.info("action.end_completed", id)
+                    }
                     else -> Wire.fail()
                 }
-            } catch (error: Exception) { runtime.controller.recordError(error) }
+            } catch (error: Exception) {
+                JackfieldLog.error("action.failed", error = error)
+                runtime.controller.recordError(error)
+            }
             finally { pending.finish() }
         }
     }

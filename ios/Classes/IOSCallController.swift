@@ -1,10 +1,37 @@
 import CallKit
+import CryptoKit
 import Foundation
 import AVFoundation
+import os.log
 
 #if canImport(JackfieldCore)
 import JackfieldCore
 #endif
+
+@available(iOS 13.0, *)
+enum JackfieldLog {
+  private static let log = OSLog(subsystem: Bundle.main.bundleIdentifier ?? "dev.albizia.jackfield",
+                                 category: "Jackfield")
+
+  static func info(_ stage: String, callId: String? = nil, detail: String? = nil) {
+    write(.info, stage: stage, callId: callId, detail: detail)
+  }
+
+  static func error(_ stage: String, callId: String? = nil, error: Error? = nil) {
+    write(.error, stage: stage, callId: callId,
+          detail: error.map { "error=\(String(describing: type(of: $0))) description=\($0.localizedDescription)" })
+  }
+
+  private static func write(_ type: OSLogType, stage: String, callId: String?, detail: String?) {
+    var message = "stage=\(stage)"
+    if let callId, !callId.isEmpty {
+      let digest = SHA256.hash(data: Data(callId.utf8)).prefix(5).map { String(format: "%02x", $0) }.joined()
+      message += " call=\(digest)"
+    }
+    if let detail, !detail.isEmpty { message += " \(detail)" }
+    os_log("%{public}@", log: log, type: type, message)
+  }
+}
 
 @available(iOS 13.0, *)
 final class IOSCallController: NSObject, CXProviderDelegate {
@@ -30,6 +57,7 @@ final class IOSCallController: NSObject, CXProviderDelegate {
     provider = CXProvider(configuration: config)
     super.init()
     provider.setDelegate(self, queue: .main)
+    JackfieldLog.info("callkit.provider_ready")
     Task { await reconcileSystemCalls() }
   }
 
@@ -56,6 +84,7 @@ final class IOSCallController: NSObject, CXProviderDelegate {
   }
 
   func reportIncoming(callId: String, callerId: String, callerName: String, media: String) async throws -> CallRecord {
+    JackfieldLog.info("callkit.report_incoming", callId: callId, detail: "media=\(media)")
     if let existing = try await store.snapshot(callId: callId) {
       _ = try await existingUUID(callId)
       return existing
@@ -68,8 +97,13 @@ final class IOSCallController: NSObject, CXProviderDelegate {
     Self.restrictUnsupportedActions(update)
     try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
       provider.reportNewIncomingCall(with: id, update: update) { error in
-        if let error { continuation.resume(throwing: error) }
-        else { continuation.resume() }
+        if let error {
+          JackfieldLog.error("callkit.report_incoming_failed", callId: callId, error: error)
+          continuation.resume(throwing: error)
+        } else {
+          JackfieldLog.info("callkit.incoming_reported", callId: callId)
+          continuation.resume()
+        }
       }
     }
     let record = CallRecord(callId: callId, state: "ringing", media: media, callerId: callerId, callerName: callerName, systemUUID: id)
@@ -79,6 +113,7 @@ final class IOSCallController: NSObject, CXProviderDelegate {
   }
 
   func startOutgoing(callId: String, calleeId: String, calleeName: String, media: String) async throws -> CallRecord {
+    JackfieldLog.info("callkit.start_outgoing", callId: callId, detail: "media=\(media)")
     if let existing = try await store.snapshot(callId: callId) {
       _ = try await existingUUID(callId)
       return existing
@@ -113,6 +148,7 @@ final class IOSCallController: NSObject, CXProviderDelegate {
   }
 
   func setConnected(callId: String) async throws -> CallRecord {
+    JackfieldLog.info("callkit.set_connected", callId: callId)
     guard var record = try await store.snapshot(callId: callId) else { throw JackfieldCoreError.invalidState }
     if record.state == "active" { return record }
     guard record.state == "connecting", record.actionId == nil else { throw JackfieldCoreError.invalidState }
@@ -124,6 +160,7 @@ final class IOSCallController: NSObject, CXProviderDelegate {
   }
 
   func end(callId: String, reason: String) async throws -> CallRecord {
+    JackfieldLog.info("callkit.end_requested", callId: callId, detail: "reason=\(reason)")
     guard let record = try await store.snapshot(callId: callId) else { throw JackfieldCoreError.invalidState }
     if record.state == "ended" { return record }
     let id = try await existingUUID(callId)
@@ -156,6 +193,7 @@ final class IOSCallController: NSObject, CXProviderDelegate {
     answerDeadlines.removeValue(forKey: actionId)?.cancel()
     if let event = resolution.ended { publish(event) }
     let receipt = resolution.receipt
+    JackfieldLog.info("callkit.answer_completed", callId: record.callId, detail: "succeeded=\(receipt.succeeded)")
     if receipt.succeeded {
       configureAudioSession()
       action.fulfill()
@@ -217,6 +255,7 @@ final class IOSCallController: NSObject, CXProviderDelegate {
   }
 
   func providerDidReset(_ provider: CXProvider) {
+    JackfieldLog.error("callkit.provider_reset")
     for (_, action) in pendingAnswers { action.fail() }
     for (_, timer) in answerDeadlines { timer.cancel() }
     pendingAnswers.removeAll(); answerDeadlines.removeAll()
@@ -225,20 +264,23 @@ final class IOSCallController: NSObject, CXProviderDelegate {
   }
 
   func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
+    JackfieldLog.info("callkit.outgoing_action")
     configureAudioSession()
     action.fulfill()
   }
 
   func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
+    JackfieldLog.info("callkit.audio_activated")
     configureAudioSession()
   }
 
   private func configureAudioSession() {
     let audio = AVAudioSession.sharedInstance()
     do {
-      try audio.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth])
+      try audio.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP])
+      JackfieldLog.info("callkit.audio_configured", detail: "category=playAndRecord mode=voiceChat bluetooth=true")
     } catch {
-      NSLog("[Jackfield] audio session configuration failed: %@", (error as NSError).localizedDescription)
+      JackfieldLog.error("callkit.audio_configuration_failed", error: error)
     }
   }
 
@@ -250,6 +292,7 @@ final class IOSCallController: NSObject, CXProviderDelegate {
   }
 
   func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
+    JackfieldLog.info("callkit.answer_action_received")
     Task {
       do {
         guard let callId = try await knownCallId(action.callUUID),
@@ -260,7 +303,11 @@ final class IOSCallController: NSObject, CXProviderDelegate {
         pendingAnswers[actionId] = action
         expireAnswer(actionId, deadline: deadline)
         publish(event)
-      } catch { action.fail() }
+        JackfieldLog.info("callkit.answer_requested", callId: callId)
+      } catch {
+        JackfieldLog.error("callkit.answer_action_failed", error: error)
+        action.fail()
+      }
     }
   }
 
@@ -283,7 +330,11 @@ final class IOSCallController: NSObject, CXProviderDelegate {
           }
         }
         action.fulfill()
-      } catch { action.fail() }
+        JackfieldLog.info("callkit.end_action_completed", callId: callId, detail: "reason=\(reason)")
+      } catch {
+        JackfieldLog.error("callkit.end_action_failed", error: error)
+        action.fail()
+      }
     }
   }
 }

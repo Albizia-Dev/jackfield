@@ -18,6 +18,7 @@ class JackfieldIncomingCallActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        JackfieldLog.info("fullscreen.created", intent.getStringExtra(EXTRA_CALL_ID), "locked=${keyguardManager.isKeyguardLocked}")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
@@ -35,12 +36,14 @@ class JackfieldIncomingCallActivity : Activity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        JackfieldLog.info("fullscreen.new_intent", intent.getStringExtra(EXTRA_CALL_ID))
         bind(intent)
     }
 
     private fun bind(intent: Intent) {
         callId = intent.getStringExtra(EXTRA_CALL_ID).orEmpty()
         if (callId.isBlank()) {
+            JackfieldLog.warn("fullscreen.invalid_call")
             finishAndRemoveTask()
             return
         }
@@ -93,6 +96,7 @@ class JackfieldIncomingCallActivity : Activity() {
     }
 
     private fun perform(action: String, openApplication: Boolean) {
+        JackfieldLog.info("fullscreen.action", callId, "action=$action")
         sendBroadcast(Intent(this, dev.albizia.jackfield.push.JackfieldActionReceiver::class.java).apply {
             this.action = action
             putExtra(EXTRA_CALL_ID, callId)
@@ -113,4 +117,7 @@ class JackfieldIncomingCallActivity : Activity() {
         const val EXTRA_CALL_ID = "callId"
         const val EXTRA_CALLER_NAME = "callerName"
     }
+
+    private val keyguardManager
+        get() = getSystemService(android.app.KeyguardManager::class.java)
 }

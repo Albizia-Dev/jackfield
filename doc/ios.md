@@ -10,6 +10,11 @@ PushKit не имеют отдельного интерактивного permis
 звонка адаптер настраивает `AVAudioSession` как `playAndRecord/voiceChat` с
 Bluetooth routing. Hold, grouping, ungrouping и DTMF явно не заявляются CallKit.
 
+PushKit, CallKit, audio session и callback runtime пишут privacy-safe этапы в
+unified logging с category `Jackfield`. Токены, payload и имена участников не
+выводятся; `callId` заменяется коротким SHA-256 отпечатком. Их можно фильтровать
+по subsystem host-приложения и category в Console.app.
+
 База данных хранится в защищённом Application Support. Snapshot звонка и событие записываются одной транзакцией SQLite до публикации в stream; индекс `(call_id, sequence)` исключает повтор последовательности. Версия схемы `1` вводится транзакционной миграцией из старой схемы `0`: дубли старых последовательностей сначала перенумеровываются по `(call_id, sequence, rowid)` без сброса receipts. Будущая неизвестная версия отвергается. Если база не открылась, каналы возвращают безопасную ошибку `platformFailure` и PushKit не запускается. Flutter ACK, HTTP receipt и action receipt независимы. UUID CallKit хранится в snapshot: после перезапуска адаптер сверяет его с `CXCallObserver` и не создаёт новый UUID для существующего звонка.
 
 Ответ CallKit остаётся открытым до `completeAction`. Успех до дедлайна вызывает `CXAnswerCallAction.fulfill()`. Отказ или истечение срока атомарно сохраняет action receipt, terminal snapshot и `ended(reason: failed)` до `fail()` и закрытия системного звонка; событие остаётся в outbox для replay. Это терминальное событие допускается даже при достигнутом HTTP admission limit, чтобы не потерять исход системного действия. Дедлайн не превышает `CXAction.timeoutDate`. После перезапуска невосстановимое ожидающее действие завершается как неуспешное; приложение должно начать новый звонок, если требуется повтор.

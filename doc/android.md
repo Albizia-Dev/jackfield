@@ -145,12 +145,22 @@ val result = JackfieldPushReceiver.reportIncomingCall(context, mapOf(
 Сначала подпишитесь на updates, затем запросите `pushTokens`. При ротации host
 явно удаляет прежний token и добавляет новый. Значения остаются непрозрачными.
 
-Альтернатива — explicit broadcast в `JackfieldPushReceiver`: action
+Альтернатива — explicit component broadcast в `JackfieldPushReceiver`: action
 `dev.albizia.jackfield.INCOMING` и строковый extra `payload` с JSON команды;
 для завершения — `dev.albizia.jackfield.END` и JSON `{version, callId, reason}`.
 Receiver не экспортируется, использует `goAsync` и не создаёт Flutter engine.
 Обработчики действий уведомления также не экспортируются; PendingIntent immutable
 и различается по полной идентичности звонка и действия.
+
+Нативный путь пишет privacy-safe этапы с тегами `Jackfield` и
+`JackfieldExample`: FCM delivery, разбор, presentation, foreground service,
+ringtone/vibration/wake lock, системное действие и завершение. Push payload,
+provider token и caller name не логируются; `callId` заменяется коротким
+стабильным отпечатком. Для живой диагностики:
+
+```sh
+adb logcat -s Jackfield:I JackfieldExample:I '*:S'
+```
 
 ## Проверка и ограничения
 

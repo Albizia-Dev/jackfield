@@ -15,26 +15,31 @@ final class JackfieldPushRegistry: NSObject, PKPushRegistryDelegate {
     super.init()
     registry.delegate = self
     registry.desiredPushTypes = [.voIP]
+    JackfieldLog.info("pushkit.registered")
   }
 
   func pushRegistry(_ registry: PKPushRegistry, didUpdate pushCredentials: PKPushCredentials, for type: PKPushType) {
     guard type == .voIP else { return }
+    JackfieldLog.info("pushkit.token_updated")
     tokenChanged(pushCredentials.token.map { String(format: "%02x", $0) }.joined(), false)
   }
 
   func pushRegistry(_ registry: PKPushRegistry, didInvalidatePushTokenFor type: PKPushType) {
     guard type == .voIP else { return }
+    JackfieldLog.info("pushkit.token_invalidated")
     tokenChanged(nil, true)
   }
 
   func pushRegistry(_ registry: PKPushRegistry, didReceiveIncomingPushWith payload: PKPushPayload, for type: PKPushType, completion: @escaping () -> Void) {
+    JackfieldLog.info("pushkit.received")
     guard type == .voIP, let data = payload.dictionaryPayload["jackfield"] as? [String: Any]
-    else { completion(); return }
+    else { JackfieldLog.error("pushkit.invalid_envelope"); completion(); return }
     if data["type"] as? String == "ended" {
       guard let callId = data["callId"] as? String, !callId.isEmpty,
             let reason = data["reason"] as? String,
             ["remote", "rejected", "missed", "failed"].contains(reason)
-      else { completion(); return }
+      else { JackfieldLog.error("pushkit.invalid_end"); completion(); return }
+      JackfieldLog.info("pushkit.end_dispatch", callId: callId, detail: "reason=\(reason)")
       ended(callId, reason, completion)
       return
     }
@@ -43,7 +48,8 @@ final class JackfieldPushRegistry: NSObject, PKPushRegistryDelegate {
           let callerId = caller["id"], !callerId.isEmpty,
           let name = caller["displayName"], !name.isEmpty,
           let media = data["media"] as? String, ["audio", "video"].contains(media)
-    else { completion(); return }
+    else { JackfieldLog.error("pushkit.invalid_incoming"); completion(); return }
+    JackfieldLog.info("pushkit.incoming_dispatch", callId: callId, detail: "media=\(media)")
     incoming(callId, callerId, name, media, completion)
   }
 }

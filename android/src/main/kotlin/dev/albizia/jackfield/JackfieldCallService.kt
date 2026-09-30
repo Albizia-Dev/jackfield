@@ -33,7 +33,11 @@ internal class JackfieldCallService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val callId = intent?.getStringExtra(EXTRA_CALL_ID) ?: return START_NOT_STICKY
+        val callId = intent?.getStringExtra(EXTRA_CALL_ID) ?: run {
+            JackfieldLog.warn("service.invalid_intent")
+            return START_NOT_STICKY
+        }
+        JackfieldLog.info("service.command", callId, "action=${intent.action}")
         when (intent.action) {
             ACTION_SHOW -> {
                 val notification = CallNotifications.build(
@@ -50,6 +54,7 @@ internal class JackfieldCallService : Service() {
             ACTION_ACTIVATE -> {
                 stopRinging(callId)
                 activateCallAudio()
+                JackfieldLog.info("service.call_audio_active", callId)
             }
             ACTION_END -> {
                 stopRinging(callId)
@@ -61,6 +66,7 @@ internal class JackfieldCallService : Service() {
                     releaseCallAudio()
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()
+                    JackfieldLog.info("service.stopped", callId)
                 } else {
                     promote(replacement.key, replacement.value)
                 }
@@ -70,13 +76,17 @@ internal class JackfieldCallService : Service() {
     }
 
     override fun onDestroy() {
+        JackfieldLog.info("service.destroy")
         stopRinging(null)
         releaseCallAudio()
         super.onDestroy()
     }
 
     private fun startRinging(callId: String) {
-        if (ringingCallId == callId && ringtone?.isPlaying == true) return
+        if (ringingCallId == callId && ringtone?.isPlaying == true) {
+            JackfieldLog.info("ringtone.already_playing", callId)
+            return
+        }
         stopRinging(null)
         ringingCallId = callId
         val power = getSystemService(PowerManager::class.java)
@@ -84,6 +94,7 @@ internal class JackfieldCallService : Service() {
             setReferenceCounted(false)
             acquire(120_000)
         }
+        JackfieldLog.info("wakelock.acquired", callId, "timeout_ms=120000")
         val attributes = AudioAttributes.Builder()
             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
             .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
@@ -95,6 +106,7 @@ internal class JackfieldCallService : Service() {
                 isLooping = true
                 play()
             }
+            JackfieldLog.info("ringtone.started", callId, "engine=ringtone looping=true playing=${ringtone?.isPlaying == true}")
         } else {
             legacyRingtone = try {
                 MediaPlayer().apply {
@@ -104,7 +116,11 @@ internal class JackfieldCallService : Service() {
                     prepare()
                     start()
                 }
-            } catch (_: Exception) { null }
+            } catch (error: Exception) {
+                JackfieldLog.error("ringtone.start_failed", callId, error)
+                null
+            }
+            JackfieldLog.info("ringtone.started", callId, "engine=media_player looping=true playing=${legacyRingtone?.isPlaying == true}")
         }
         vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             getSystemService(VibratorManager::class.java).defaultVibrator
@@ -113,10 +129,12 @@ internal class JackfieldCallService : Service() {
             getSystemService(Vibrator::class.java)
         }
         vibrator?.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 1000, 500, 1000), 0))
+        JackfieldLog.info("vibration.started", callId, "available=${vibrator?.hasVibrator() == true}")
     }
 
     private fun stopRinging(callId: String?) {
         if (callId != null && ringingCallId != callId) return
+        val stoppedCallId = ringingCallId
         ringtone?.stop()
         ringtone = null
         legacyRingtone?.release()
@@ -126,6 +144,7 @@ internal class JackfieldCallService : Service() {
         ringingCallId = null
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
+        if (stoppedCallId != null) JackfieldLog.info("ringing.stopped", stoppedCallId)
     }
 
     private fun activateCallAudio() {
@@ -143,7 +162,10 @@ internal class JackfieldCallService : Service() {
                 .setAcceptsDelayedFocusGain(false)
                 .setOnAudioFocusChangeListener { }
                 .build()
-                .also(audio::requestAudioFocus)
+                .also {
+                    val result = audio.requestAudioFocus(it)
+                    JackfieldLog.info("audio.focus_requested", detail = "result=$result sdk=${Build.VERSION.SDK_INT}")
+                }
         } else {
             @Suppress("DEPRECATION")
             audio.requestAudioFocus(null, AudioManager.STREAM_VOICE_CALL, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
@@ -159,6 +181,7 @@ internal class JackfieldCallService : Service() {
         }
         audioFocus = null
         audio.mode = priorAudioMode
+        JackfieldLog.info("audio.released", detail = "restored_mode=$priorAudioMode")
     }
 
     private fun promote(callId: String, notification: Notification) {
@@ -168,6 +191,7 @@ internal class JackfieldCallService : Service() {
         } else {
             startForeground(id, notification)
         }
+        JackfieldLog.info("notification.foreground", callId, "notification_id=$id")
     }
 
     companion object {

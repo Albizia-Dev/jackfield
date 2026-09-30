@@ -27,9 +27,11 @@ final class JackfieldBackgroundRuntime {
     do {
       store = try EventStore(path: folder.appendingPathComponent("events.sqlite3").path)
       storageFailure = nil
+      JackfieldLog.info("runtime.store_ready")
     } catch {
       store = nil
       storageFailure = .platformFailure
+      JackfieldLog.error("runtime.store_failed", error: error)
     }
     if let store {
       dispatcher = JackfieldHTTPDispatcher(store: store)
@@ -43,6 +45,7 @@ final class JackfieldBackgroundRuntime {
                                   endpoint: endpoint.absoluteString, ttl: ttl)
     try JackfieldCredentialStore.save(token)
     try await store.resumeHTTPAfterCredentialRotation()
+    JackfieldLog.info("callback.configured", detail: "scheme=\(endpoint.scheme ?? "unknown") limit=\(limit)")
     await sendReady()
   }
 
@@ -51,6 +54,7 @@ final class JackfieldBackgroundRuntime {
     try await store.disableHTTP()
     JackfieldCredentialStore.delete()
     BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.refreshIdentifier)
+    JackfieldLog.info("callback.disabled")
   }
 
   func sendReady() async {
@@ -76,6 +80,7 @@ final class JackfieldBackgroundRuntime {
       }
       task.expirationHandler = { work.cancel(); finish.complete(success: false) }
     }
+    JackfieldLog.info("background.registered", detail: "success=\(registered)")
     Task { await sendReady() }
   }
 

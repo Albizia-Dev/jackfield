@@ -29,7 +29,11 @@ internal class TelecomPresentation(
     init {
         if (ownCallsPermission()) try {
             manager = CallsManager(context).also { it.registerAppWithTelecom(CallsManager.CAPABILITY_SUPPORTS_VIDEO_CALLING) }
-        } catch (_: Exception) { fallback = true }
+            JackfieldLog.info("telecom.registered")
+        } catch (error: Exception) {
+            fallback = true
+            JackfieldLog.warn("telecom.registration_failed", error = error)
+        }
     }
     private fun ownCallsPermission() = ContextCompat.checkSelfPermission(context, Manifest.permission.MANAGE_OWN_CALLS) == PackageManager.PERMISSION_GRANTED
     override val mechanism: String get() = when {
@@ -44,6 +48,7 @@ internal class TelecomPresentation(
     )
 
     override suspend fun show(call: CallEntity, incoming: Boolean) {
+        JackfieldLog.info("presentation.show", call.callId, "incoming=$incoming mechanism=$mechanism")
         val telecom = manager
         if (telecom != null && !fallback && ownCallsPermission()) {
             val registered = CompletableDeferred<Boolean>()
@@ -71,10 +76,12 @@ internal class TelecomPresentation(
                         controls[call.callId] = this
                         added = true
                         notifications.show(call)
+                        JackfieldLog.info("telecom.call_added", call.callId)
                         registered.complete(true)
                     }
                 } catch (cancelled: CancellationException) { throw cancelled }
                 catch (failure: Exception) {
+                    JackfieldLog.error("telecom.call_failed", call.callId, failure)
                     registered.complete(false)
                     if (added) {
                         controls.remove(call.callId)
@@ -86,9 +93,11 @@ internal class TelecomPresentation(
             if (withTimeoutOrNull(6000) { registered.await() } == true) return
             job.cancel()
             fallback = true
+            JackfieldLog.warn("telecom.timeout_fallback", call.callId)
         }
         if (!notifications.permitted()) throw JackfieldFailure("permissionDenied")
         notifications.show(call)
+        JackfieldLog.info("presentation.notification_fallback", call.callId)
     }
     override suspend fun update(call: CallEntity) { notifications.show(call) }
     override suspend fun activate(call: CallEntity) {
@@ -99,8 +108,10 @@ internal class TelecomPresentation(
             if (result !is CallControlResult.Success) throw JackfieldFailure("temporarilyUnavailable")
         }
         notifications.activate(call.callId)
+        JackfieldLog.info("presentation.activated", call.callId)
     }
     override suspend fun end(callId: String) {
+        JackfieldLog.info("presentation.end", callId)
         notifications.end(callId)
         controls[callId]?.let { control ->
             try {
