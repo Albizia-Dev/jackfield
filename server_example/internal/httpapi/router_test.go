@@ -25,7 +25,7 @@ func (f *fakePush) SendIncoming(_ context.Context, token string, _ calls.Call) (
 	f.token = token
 	return "fcm-id", f.incomingErr
 }
-func (f *fakePush) SendEnd(_ context.Context, token string, _ calls.Call) (string, error) {
+func (f *fakePush) SendEnd(_ context.Context, token string, _ calls.Call, _ string) (string, error) {
 	f.ended++
 	f.token = token
 	return "fcm-end-id", f.endErr
@@ -41,7 +41,7 @@ func (f *blockingEndPush) SendIncoming(context.Context, string, calls.Call) (str
 	return "fcm-id", nil
 }
 
-func (f *blockingEndPush) SendEnd(context.Context, string, calls.Call) (string, error) {
+func (f *blockingEndPush) SendEnd(context.Context, string, calls.Call, string) (string, error) {
 	f.ends.Add(1)
 	f.sent <- struct{}{}
 	<-f.release

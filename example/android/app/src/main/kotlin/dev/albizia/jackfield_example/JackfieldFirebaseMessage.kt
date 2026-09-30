@@ -10,7 +10,7 @@ object JackfieldFirebaseMessage {
         val media: String,
     ) : Parsed
 
-    data class End(val callId: String) : Parsed
+    data class End(val callId: String, val reason: String) : Parsed
 
     fun parse(data: Map<String, String>): Parsed? {
         if (data["version"] != "1") return null
@@ -27,7 +27,9 @@ object JackfieldFirebaseMessage {
                     Incoming(callId, callerId, callerName, media)
                 }
             }
-            "end" -> if (data["reason"] == "remote") End(callId) else null
+            "end" -> data["reason"]?.takeIf {
+                it in setOf("local", "remote", "rejected", "missed", "failed")
+            }?.let { End(callId, it) }
             else -> null
         }
     }

@@ -1,7 +1,9 @@
 package callbacks
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +13,23 @@ import (
 
 	"github.com/Albizia-Dev/jackfield/server_example/internal/calls"
 )
+
+type relayPush struct {
+	fail   bool
+	calls  int
+	token  string
+	reason string
+}
+
+func (p *relayPush) SendEnd(_ context.Context, token string, _ calls.Call, reason string) (string, error) {
+	p.calls++
+	p.token = token
+	p.reason = reason
+	if p.fail {
+		return "", errors.New("provider unavailable")
+	}
+	return "message-id", nil
+}
 
 func canonicalAnswer(t *testing.T) string {
 	t.Helper()
@@ -129,6 +148,35 @@ func TestRejectedEndUpdatesCallOnce(t *testing.T) {
 	call, _ := store.Get("call-1")
 	if response.Code != http.StatusNoContent || call.State != calls.StateRejected || store.EventCount("event-8") != 1 {
 		t.Fatalf("rejection: %d %#v", response.Code, call)
+	}
+}
+
+func TestRejectedEndRelaysToInitiatorAndRetriesProviderFailure(t *testing.T) {
+	store := calls.NewStore()
+	store.Put(calls.Call{ID: "call-1", DeviceToken: "callee-token", InitiatorToken: "caller-token"})
+	push := &relayPush{fail: true}
+	handler := NewHandler(store, "secret", push)
+	body := `{"version":1,"event":{"version":1,"callId":"call-1","eventId":"event-8","sequence":3,"occurredAt":"2026-09-23T05:01:00.000Z","type":"ended","reason":"rejected"}}`
+	post := func() int {
+		request := httptest.NewRequest(http.MethodPost, "/callbacks/jackfield", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer secret")
+		request.Header.Set("Idempotency-Key", "event-8")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response.Code
+	}
+	if code := post(); code != http.StatusBadGateway {
+		t.Fatalf("failed relay returned %d", code)
+	}
+	push.fail = false
+	if code := post(); code != http.StatusNoContent {
+		t.Fatalf("retry returned %d", code)
+	}
+	if code := post(); code != http.StatusNoContent {
+		t.Fatalf("completed duplicate returned %d", code)
+	}
+	if push.calls != 2 || push.token != "caller-token" || push.reason != "rejected" {
+		t.Fatalf("wrong relay: %#v", push)
 	}
 }
 

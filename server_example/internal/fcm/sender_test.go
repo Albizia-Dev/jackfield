@@ -24,8 +24,8 @@ func TestInviteRejectsNonpositiveTTL(t *testing.T) {
 }
 
 func TestRemoteEndUsesDataMessage(t *testing.T) {
-	message := BuildEnd("device-token", calls.Call{ID: "call-1"}, 90*time.Second)
-	if message.Token != "device-token" || message.Data["version"] != "1" || message.Data["type"] != "end" || message.Data["callId"] != "call-1" || message.Notification != nil || message.Android == nil || message.Android.TTL == nil || *message.Android.TTL != 90*time.Second {
+	message := BuildEnd("device-token", calls.Call{ID: "call-1"}, "rejected", 90*time.Second)
+	if message.Token != "device-token" || message.Data["version"] != "1" || message.Data["type"] != "end" || message.Data["callId"] != "call-1" || message.Data["reason"] != "rejected" || message.Notification != nil || message.Android == nil || message.Android.TTL == nil || *message.Android.TTL != 90*time.Second {
 		t.Fatalf("invalid remote end: %#v", message)
 	}
 }

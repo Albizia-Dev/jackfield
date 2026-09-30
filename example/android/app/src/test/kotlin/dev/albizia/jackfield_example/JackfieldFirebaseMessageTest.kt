@@ -32,7 +32,7 @@ class JackfieldFirebaseMessageTest {
     @Test
     fun `remote end data is normalized for Jackfield`() {
         assertEquals(
-            JackfieldFirebaseMessage.End("call-1"),
+            JackfieldFirebaseMessage.End("call-1", "remote"),
             JackfieldFirebaseMessage.parse(
                 mapOf(
                     "version" to "1",
@@ -40,6 +40,12 @@ class JackfieldFirebaseMessageTest {
                     "callId" to "call-1",
                     "reason" to "remote",
                 ),
+            ),
+        )
+        assertEquals(
+            JackfieldFirebaseMessage.End("call-1", "rejected"),
+            JackfieldFirebaseMessage.parse(
+                mapOf("version" to "1", "type" to "end", "callId" to "call-1", "reason" to "rejected"),
             ),
         )
     }

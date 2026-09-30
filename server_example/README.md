@@ -31,12 +31,12 @@ Host Android-приложения должен зарегистрировать 
 curl -X POST https://YOUR_HOST/calls \
   -H 'Authorization: Bearer YOUR_API_TOKEN' \
   -H 'Content-Type: application/json' \
-  -d '{"callId":"call-1","caller":{"id":"person-1","displayName":"Alice"},"media":"audio","fcmToken":"DEVICE_FCM_TOKEN"}'
+  -d '{"callId":"call-1","caller":{"id":"person-1","displayName":"Alice"},"media":"audio","fcmToken":"CALLEE_FCM_TOKEN","initiatorFcmToken":"CALLER_FCM_TOKEN"}'
 ```
 
 Успех даёт HTTP 201; одинаковый `callId` повторно даёт 409. FCM отправляется как **data-only** сообщение с высоким Android priority и TTL из `JACKFIELD_FCM_TTL` (по умолчанию 90 секунд). FCM message ID подтверждает принятие провайдером, а не показ системного UI.
 
-Когда пользователь нажмёт «Ответить», Jackfield отправит `answer_requested` на callback endpoint. Сервер сохранит событие один раз по `eventId` и отметит `answer_requested`. Это запрос приложению начать media/signaling; фактический успешный ответ требует `completeAction` в приложении. Подтверждение callback не подтверждает Flutter-событие и не означает успешное media соединение. Отклонение приходит как событие `ended` с `reason: "rejected"`; обычное завершение — как `ended` с другой причиной. Тело соответствует `../test/fixtures/callback_answer_requested_v1.json`; заголовки: `Authorization: Bearer YOUR_CALLBACK_TOKEN`, `Idempotency-Key: event-7`. Callback с уже полученным `eventId` или устаревшим `sequence` получает HTTP 204; устаревшее событие сохраняется для дедупликации, но не меняет состояние. Завершённый звонок не возвращается в состояние ответа даже при более позднем `sequence`.
+Когда пользователь нажмёт «Ответить», Jackfield отправит `answer_requested` на callback endpoint. Сервер сохранит событие один раз по `eventId` и отметит `answer_requested`. Это запрос приложению начать media/signaling; фактический успешный ответ требует `completeAction` в приложении. Подтверждение callback не подтверждает Flutter-событие и не означает успешное media соединение. Отклонение приходит как событие `ended` с `reason: "rejected"`; обычное завершение — как `ended` с другой причиной. Если при создании звонка передан `initiatorFcmToken`, сервер подтверждает ended callback только после принятия FCM-сообщения завершения для инициатора. Ошибка FCM возвращает 502, Jackfield повторяет callback с тем же `eventId`, а сервер повторяет relay без дублирования уже успешной доставки. Так отказ или завершение на принимающем устройстве закрывает системный звонок второго Android-участника. Тело соответствует `../test/fixtures/callback_answer_requested_v1.json`; заголовки: `Authorization: Bearer YOUR_CALLBACK_TOKEN`, `Idempotency-Key: event-7`. Callback с уже полученным `eventId` или устаревшим `sequence` получает HTTP 204; устаревшее событие сохраняется для дедупликации, но не меняет состояние. Завершённый звонок не возвращается в состояние ответа даже при более позднем `sequence`.
 
 Завершить со стороны сервера:
 

@@ -16,7 +16,7 @@ import (
 
 type PushSender interface {
 	SendIncoming(ctx context.Context, token string, call calls.Call) (string, error)
-	SendEnd(ctx context.Context, token string, call calls.Call) (string, error)
+	SendEnd(ctx context.Context, token string, call calls.Call, reason string) (string, error)
 }
 
 type router struct {
@@ -33,7 +33,7 @@ func NewRouter(store *calls.Store, push PushSender, apiToken, callbackToken stri
 	mux.Handle("PUT /devices/test", http.HandlerFunc(r.registerTestDevice))
 	mux.Handle("POST /calls", http.HandlerFunc(r.create))
 	mux.Handle("POST /calls/{callId}/end", http.HandlerFunc(r.end))
-	mux.Handle("POST /callbacks/jackfield", callbacks.NewHandler(store, callbackToken))
+	mux.Handle("POST /callbacks/jackfield", callbacks.NewHandler(store, callbackToken, push))
 	return mux
 }
 
@@ -81,10 +81,11 @@ func (r *router) create(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 	var input struct {
-		CallID   string      `json:"callId"`
-		Caller   calls.Party `json:"caller"`
-		Media    string      `json:"media"`
-		FCMToken string      `json:"fcmToken"`
+		CallID            string      `json:"callId"`
+		Caller            calls.Party `json:"caller"`
+		Media             string      `json:"media"`
+		FCMToken          string      `json:"fcmToken"`
+		InitiatorFCMToken string      `json:"initiatorFcmToken"`
 	}
 	request.Body = http.MaxBytesReader(w, request.Body, 64<<10)
 	decoder := json.NewDecoder(request.Body)
@@ -105,7 +106,7 @@ func (r *router) create(w http.ResponseWriter, request *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	call := calls.Call{ID: input.CallID, Caller: input.Caller, Media: input.Media, DeviceToken: input.FCMToken}
+	call := calls.Call{ID: input.CallID, Caller: input.Caller, Media: input.Media, DeviceToken: input.FCMToken, InitiatorToken: input.InitiatorFCMToken}
 	if !r.store.Put(call) {
 		w.WriteHeader(http.StatusConflict)
 		return
@@ -138,7 +139,7 @@ func (r *router) end(w http.ResponseWriter, request *http.Request) {
 		w.WriteHeader(http.StatusConflict)
 		return
 	}
-	if _, err := r.push.SendEnd(request.Context(), call.DeviceToken, call); err != nil {
+	if _, err := r.push.SendEnd(request.Context(), call.DeviceToken, call, "remote"); err != nil {
 		r.store.FinishEnd(id, false)
 		w.WriteHeader(http.StatusBadGateway)
 		return

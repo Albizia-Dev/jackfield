@@ -1,6 +1,7 @@
 package callbacks
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
@@ -15,10 +16,19 @@ import (
 type Handler struct {
 	store *calls.Store
 	token string
+	relay EndSender
 }
 
-func NewHandler(store *calls.Store, token string) *Handler {
-	return &Handler{store: store, token: token}
+type EndSender interface {
+	SendEnd(ctx context.Context, token string, call calls.Call, reason string) (string, error)
+}
+
+func NewHandler(store *calls.Store, token string, relay ...EndSender) *Handler {
+	var sender EndSender
+	if len(relay) != 0 {
+		sender = relay[0]
+	}
+	return &Handler{store: store, token: token, relay: sender}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -69,6 +79,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		w.WriteHeader(http.StatusNotFound)
 		return
+	}
+	if envelope.Event.Type == "ended" && h.relay != nil {
+		call, disposition := h.store.ReserveRelay(envelope.Event.EventID)
+		switch disposition {
+		case calls.RelayInProgress:
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		case calls.RelayReserved:
+			if _, err := h.relay.SendEnd(r.Context(), call.InitiatorToken, call, envelope.Event.Reason); err != nil {
+				h.store.FinishRelay(envelope.Event.EventID, false)
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			h.store.FinishRelay(envelope.Event.EventID, true)
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

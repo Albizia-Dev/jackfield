@@ -41,10 +41,10 @@ func BuildInvite(token string, call calls.Call, ttl time.Duration) *messaging.Me
 	}
 }
 
-func BuildEnd(token string, call calls.Call, ttl time.Duration) *messaging.Message {
+func BuildEnd(token string, call calls.Call, reason string, ttl time.Duration) *messaging.Message {
 	return &messaging.Message{
 		Token:   token,
-		Data:    map[string]string{"version": "1", "type": "end", "callId": call.ID, "reason": "remote"},
+		Data:    map[string]string{"version": "1", "type": "end", "callId": call.ID, "reason": reason},
 		Android: &messaging.AndroidConfig{TTL: &ttl, Priority: "high"},
 	}
 }
@@ -53,8 +53,8 @@ func (s *Sender) SendIncoming(ctx context.Context, token string, call calls.Call
 	return s.client.Send(ctx, BuildInvite(token, call, s.ttl))
 }
 
-func (s *Sender) SendEnd(ctx context.Context, token string, call calls.Call) (string, error) {
-	return s.client.Send(ctx, BuildEnd(token, call, s.ttl))
+func (s *Sender) SendEnd(ctx context.Context, token string, call calls.Call, reason string) (string, error) {
+	return s.client.Send(ctx, BuildEnd(token, call, reason, s.ttl))
 }
 
 // NewSender explicitly requires a service account path supplied by the operator.

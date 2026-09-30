@@ -18,11 +18,12 @@ const (
 )
 
 type Call struct {
-	ID          string `json:"callId"`
-	Caller      Party  `json:"caller"`
-	Media       string `json:"media"`
-	State       State  `json:"state"`
-	DeviceToken string `json:"-"`
+	ID             string `json:"callId"`
+	Caller         Party  `json:"caller"`
+	Media          string `json:"media"`
+	State          State  `json:"state"`
+	DeviceToken    string `json:"-"`
+	InitiatorToken string `json:"-"`
 }
 
 type Event struct {
@@ -38,17 +39,64 @@ type Event struct {
 }
 
 type Store struct {
-	mu         sync.Mutex
-	calls      map[string]Call
-	events     map[string]Event
-	sequence   map[string]int64
-	endPending map[string]bool
+	mu            sync.Mutex
+	calls         map[string]Call
+	events        map[string]Event
+	sequence      map[string]int64
+	endPending    map[string]bool
+	relayPending  map[string]bool
+	relayComplete map[string]bool
 }
 
 func NewStore() *Store {
 	return &Store{
 		calls: make(map[string]Call), events: make(map[string]Event),
 		sequence: make(map[string]int64), endPending: make(map[string]bool),
+		relayPending: make(map[string]bool), relayComplete: make(map[string]bool),
+	}
+}
+
+type RelayDisposition uint8
+
+const (
+	RelayNoTarget RelayDisposition = iota
+	RelayAlreadyComplete
+	RelayInProgress
+	RelayReserved
+)
+
+// ReserveRelay serializes peer-end delivery while allowing callback retries.
+func (s *Store) ReserveRelay(eventID string) (Call, RelayDisposition) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	event, exists := s.events[eventID]
+	if !exists || event.Type != "ended" {
+		return Call{}, RelayNoTarget
+	}
+	call, exists := s.calls[event.CallID]
+	if !exists || call.InitiatorToken == "" || call.InitiatorToken == call.DeviceToken {
+		return call, RelayNoTarget
+	}
+	if s.relayComplete[eventID] {
+		return call, RelayAlreadyComplete
+	}
+	if s.relayPending[eventID] {
+		return call, RelayInProgress
+	}
+	s.relayPending[eventID] = true
+	return call, RelayReserved
+}
+
+// FinishRelay records provider acceptance or releases the relay for retry.
+func (s *Store) FinishRelay(eventID string, sent bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.relayPending[eventID] {
+		return
+	}
+	delete(s.relayPending, eventID)
+	if sent {
+		s.relayComplete[eventID] = true
 	}
 }
 

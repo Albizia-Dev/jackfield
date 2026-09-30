@@ -33,7 +33,7 @@ class JackfieldFirebaseMessagingService : FirebaseMessagingService() {
                 JSONObject()
                     .put("version", 1)
                     .put("callId", parsed.callId)
-                    .put("reason", "remote"),
+                    .put("reason", parsed.reason),
             )
             null -> Unit
         }
