@@ -4,6 +4,22 @@ import XCTest
 @testable import JackfieldCore
 
 final class EventStoreTests: XCTestCase {
+  func testIncomingRingDeadlineSurvivesReopen() async throws {
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let expiresAt = Date(timeIntervalSince1970: 130)
+    var store: EventStore? = try EventStore(path: path)
+    try await store?.save(snapshot: CallRecord(
+      callId: "call-deadline", state: "ringing", media: "audio",
+      callerId: "peer", callerName: "Ada", expiresAt: expiresAt))
+    store = nil
+
+    let reopened = try EventStore(path: path)
+    let snapshot = try await reopened.snapshot(callId: "call-deadline")
+    XCTAssertEqual(snapshot?.expiresAt, expiresAt)
+    XCTAssertEqual(snapshot?.state, "ringing")
+  }
+
   func testReplayQueryCompletionRejectsSQLiteReadFailures() throws {
     XCTAssertNoThrow(try EventStore.requireQueryCompleted(SQLITE_DONE))
     for status in [SQLITE_BUSY, SQLITE_IOERR] {

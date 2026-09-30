@@ -247,6 +247,10 @@
         if (snapshot?.state !== 'connecting' || snapshot.actionId !== receipt.id) continue;
         earliest = earliest === null ? receipt.deadline : Math.min(earliest, receipt.deadline);
       }
+      for (const snapshot of await request(snapshots.getAll())) {
+        if (snapshot.state !== 'ringing' || !Number.isFinite(snapshot.expiresAt)) continue;
+        earliest = earliest === null ? snapshot.expiresAt : Math.min(earliest, snapshot.expiresAt);
+      }
       return earliest;
     });
     if (nextAt === null) return;
@@ -265,6 +269,10 @@
       (await request(tx.objectStore('receipts').getAll()))
         .filter(receipt => !receipt.completed && !receipt.expired && Number.isFinite(receipt.deadline) && receipt.deadline <= Date.now()));
     for (const receipt of expired) await terminalize(receipt.callId, 'failed', receipt.id);
+    const missed = await transaction(['snapshots'], 'readonly', async tx =>
+      (await request(tx.objectStore('snapshots').getAll()))
+        .filter(snapshot => snapshot.state === 'ringing' && Number.isFinite(snapshot.expiresAt) && snapshot.expiresAt <= Date.now()));
+    for (const snapshot of missed) await terminalize(snapshot.callId, 'missed');
     await scheduleDeadlineRecovery();
   }
 
@@ -339,7 +347,7 @@
         if (invitation) return 'duplicate';
         snapshots.put({ id: payload.callId, callId: payload.callId, caller: payload.caller, media: payload.media,
           installationId: payload.installationId, sessionId: payload.sessionId,
-          state: 'presenting', sequence: 0, actionReceipts: [] });
+          expiresAt: Date.parse(payload.expiresAt), state: 'presenting', sequence: 0, actionReceipts: [] });
         inbox.put({ id: payload.eventId, invitation: payload, acknowledged: true });
         return 'accepted';
       });
@@ -353,6 +361,7 @@
         actions: [{ action: 'answer', title: 'Answer' }, { action: 'reject', title: 'Reject' }],
       });
       if (!shown) return;
+      await scheduleDeadlineRecovery();
       await safeDrain();
     } finally {
       presentingCalls.delete(payload.callId);
@@ -366,6 +375,10 @@
     if (!callId || !['answer', 'reject'].includes(event.action)) return;
     const current = await transaction(['snapshots'], 'readonly', async tx => request(tx.objectStore('snapshots').get(callId)));
     if (!current || current.state !== 'ringing') return;
+    if (Number.isFinite(current.expiresAt) && current.expiresAt <= Date.now()) {
+      await terminalize(callId, 'missed');
+      return;
+    }
     if (current.installationId) {
       const binding = await transaction(['meta'], 'readonly', async tx => request(tx.objectStore('meta').get('pushBinding')));
       if (!binding || binding.installationId !== current.installationId || binding.sessionId !== current.sessionId) return;
@@ -528,12 +541,14 @@
       }
       case 'reportIncoming': {
         const call = message.call;
-        if (!call || !call.callId || !call.caller?.id || !call.caller.displayName || !['audio', 'video'].includes(call.media))
+        const expiresAt = Date.parse(call?.expiresAt);
+        if (!call || !call.callId || !call.caller?.id || !call.caller.displayName || !['audio', 'video'].includes(call.media) ||
+            !Number.isFinite(expiresAt) || expiresAt <= Date.now() || expiresAt - Date.now() > 300000)
           return { status: 'failure', error: { code: 'protocolFailure' } };
         await reconcilePresentations();
         if (presentingCalls.has(call.callId)) return { status: 'failure', error: { code: 'invalidState' } };
         presentingCalls.add(call.callId);
-        const snapshot = { callId: call.callId, state: 'ringing', media: call.media, caller: call.caller, actionReceipts: [] };
+        const snapshot = { callId: call.callId, state: 'ringing', media: call.media, caller: call.caller, expiresAt, actionReceipts: [] };
         try {
           const created = await transaction(['snapshots'], 'readwrite', async tx => {
             const store = tx.objectStore('snapshots');
@@ -550,6 +565,7 @@
                 actions: [{ action: 'answer', title: 'Answer' }, { action: 'reject', title: 'Reject' }] });
           } catch (_) { return { status: 'failure', error: { code: 'platformFailure' } }; }
           if (!shown) return { status: 'failure', error: { code: 'invalidState' } };
+          await scheduleDeadlineRecovery();
           return { status: 'success', value: snapshot };
         } finally {
           presentingCalls.delete(call.callId);

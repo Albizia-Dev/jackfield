@@ -45,6 +45,7 @@ final class IOSCallController: NSObject, CXProviderDelegate {
   private var requestedEndReasons: [UUID: String] = [:]
   private var pendingAnswers: [String: CXAnswerCallAction] = [:]
   private var answerDeadlines: [String: Task<Void, Never>] = [:]
+  private var ringDeadlines: [String: Task<Void, Never>] = [:]
 
   init(store: EventStore, publish: @escaping (WireEnvelope) -> Void) {
     self.store = store; self.publish = publish
@@ -83,12 +84,21 @@ final class IOSCallController: NSObject, CXProviderDelegate {
     return try await store.callId(for: uuid)
   }
 
-  func reportIncoming(callId: String, callerId: String, callerName: String, media: String) async throws -> CallRecord {
+  func reportIncoming(callId: String, callerId: String, callerName: String, media: String, expiresAt: Date) async throws -> CallRecord {
     JackfieldLog.info("callkit.report_incoming", callId: callId, detail: "media=\(media)")
     if let existing = try await store.snapshot(callId: callId) {
+      if ["ended", "failed"].contains(existing.state) { return existing }
+      if existing.state == "ringing", let persistedDeadline = existing.expiresAt, persistedDeadline <= Date() {
+        return try await end(callId: callId, reason: "missed")
+      }
       _ = try await existingUUID(callId)
+      if existing.state == "ringing", let persistedDeadline = existing.expiresAt {
+        scheduleRingDeadline(callId, at: persistedDeadline)
+      }
       return existing
     }
+    guard expiresAt > Date() else { throw JackfieldCoreError.deadlineExceeded }
+    guard expiresAt.timeIntervalSinceNow <= 300 else { throw JackfieldCoreError.protocolFailure }
     let id = newUUID(callId)
     let update = CXCallUpdate()
     update.remoteHandle = CXHandle(type: .generic, value: callerId)
@@ -106,9 +116,10 @@ final class IOSCallController: NSObject, CXProviderDelegate {
         }
       }
     }
-    let record = CallRecord(callId: callId, state: "ringing", media: media, callerId: callerId, callerName: callerName, systemUUID: id)
+    let record = CallRecord(callId: callId, state: "ringing", media: media, callerId: callerId, callerName: callerName, expiresAt: expiresAt, systemUUID: id)
     do { try await store.save(snapshot: record) }
     catch { provider.reportCall(with: id, endedAt: Date(), reason: .failed); throw error }
+    scheduleRingDeadline(callId, at: expiresAt)
     return record
   }
 
@@ -163,18 +174,20 @@ final class IOSCallController: NSObject, CXProviderDelegate {
     JackfieldLog.info("callkit.end_requested", callId: callId, detail: "reason=\(reason)")
     guard let record = try await store.snapshot(callId: callId) else { throw JackfieldCoreError.invalidState }
     if record.state == "ended" { return record }
-    let id = try await existingUUID(callId)
+    ringDeadlines.removeValue(forKey: callId)?.cancel()
     let hadPendingAnswer = record.actionId.flatMap { pendingAnswers[$0] } != nil
     if let actionId = record.actionId, hadPendingAnswer {
       _ = try await complete(actionId: actionId, succeeded: false)
       return try await store.snapshot(callId: callId) ?? record
     }
     if (reason == "local" || reason == "rejected") && !hadPendingAnswer {
+      let id = try await existingUUID(callId)
       requestedEndReasons[id] = reason
       try await request(CXTransaction(action: CXEndCallAction(call: id)))
       if let completed = try await store.snapshot(callId: callId), completed.state == "ended" { return completed }
-    } else if !hadPendingAnswer {
-      provider.reportCall(with: id, endedAt: Date(), reason: reason == "remote" ? .remoteEnded : .failed)
+    } else if !hadPendingAnswer, let id = record.systemUUID {
+      let systemReason: CXCallEndedReason = reason == "remote" ? .remoteEnded : reason == "missed" ? .unanswered : .failed
+      provider.reportCall(with: id, endedAt: Date(), reason: systemReason)
     }
     let event = try await store.saveEnded(callId: callId, eventId: UUID().uuidString, reason: reason, at: Date())
     publish(event)
@@ -215,10 +228,29 @@ final class IOSCallController: NSObject, CXProviderDelegate {
     }
   }
 
+  private func scheduleRingDeadline(_ callId: String, at deadline: Date) {
+    ringDeadlines.removeValue(forKey: callId)?.cancel()
+    ringDeadlines[callId] = Task { [weak self] in
+      let delay = max(0, deadline.timeIntervalSinceNow + 0.001)
+      try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+      guard !Task.isCancelled, let self,
+            let record = try? await self.store.snapshot(callId: callId), record.state == "ringing" else { return }
+      _ = try? await self.end(callId: callId, reason: "missed")
+    }
+  }
+
   private func reconcileSystemCalls() async {
     guard let records = try? await store.allCallRecords() else { return }
     let observed = Set(callObserver.calls.filter { !$0.hasEnded }.map(\.uuid))
     for record in records where record.state != "ended" {
+      if record.state == "ringing", let deadline = record.expiresAt {
+        if deadline <= Date() {
+          if let event = try? await store.saveEnded(callId: record.callId, eventId: UUID().uuidString, reason: "missed", at: Date()) { publish(event) }
+          if let id = record.systemUUID, observed.contains(id) { provider.reportCall(with: id, endedAt: Date(), reason: .unanswered) }
+          continue
+        }
+        scheduleRingDeadline(record.callId, at: deadline)
+      }
       if record.state == "failed" {
         if let event = try? await store.saveEnded(callId: record.callId, eventId: UUID().uuidString, reason: "failed", at: Date()) { publish(event) }
         if let id = record.systemUUID, observed.contains(id) { provider.reportCall(with: id, endedAt: Date(), reason: .failed) }
@@ -258,7 +290,8 @@ final class IOSCallController: NSObject, CXProviderDelegate {
     JackfieldLog.error("callkit.provider_reset")
     for (_, action) in pendingAnswers { action.fail() }
     for (_, timer) in answerDeadlines { timer.cancel() }
-    pendingAnswers.removeAll(); answerDeadlines.removeAll()
+    for (_, timer) in ringDeadlines { timer.cancel() }
+    pendingAnswers.removeAll(); answerDeadlines.removeAll(); ringDeadlines.removeAll()
     identifiers.removeAll(); callIds.removeAll(); requestedEndReasons.removeAll()
     Task { await reconcileSystemCalls() }
   }
@@ -297,6 +330,7 @@ final class IOSCallController: NSObject, CXProviderDelegate {
       do {
         guard let callId = try await knownCallId(action.callUUID),
               let record = try await store.snapshot(callId: callId), record.state == "ringing" else { action.fail(); return }
+        ringDeadlines.removeValue(forKey: callId)?.cancel()
         let deadline = min(action.timeoutDate, Date().addingTimeInterval(30))
         let actionId = UUID().uuidString
         let event = try await store.saveAnswerRequested(callId: callId, eventId: UUID().uuidString, actionId: actionId, deadline: deadline, at: Date())

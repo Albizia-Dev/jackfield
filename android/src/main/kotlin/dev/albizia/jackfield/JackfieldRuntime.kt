@@ -13,7 +13,11 @@ internal class JackfieldRuntime private constructor(context: Context) {
     val database = JackfieldDatabase.open(context)
     private val configuration = ProtectedConfigurationStore.open(context)
     private val presentation = TelecomPresentation(context, scope)
-    val controller = CallController(database, presentation, configuration, { id, delay -> CallbackScheduler.enqueue(context, id, delay) })
+    val controller = CallController(
+        database, presentation, configuration,
+        { id, delay -> CallbackScheduler.enqueue(context, id, delay) },
+        scheduleRingDeadline = { id, delay -> scheduleRingDeadline(id, delay) },
+    )
     val callbacks = CallbackProcessor(database.events(), configuration::load, HttpsTransport())
     init {
         presentation.controller = controller
@@ -48,9 +52,19 @@ internal class JackfieldRuntime private constructor(context: Context) {
         }
         return snapshot
     }
+    private fun scheduleRingDeadline(callId: String, delayMs: Long) {
+        val schedulerFailure = try { RingDeadlineScheduler.enqueue(appContext, callId, delayMs); null }
+        catch (error: Exception) { error }
+        scope.launch {
+            delay(delayMs.coerceAtLeast(1))
+            try { controller.reconcileRingDeadlines() } catch (error: Exception) { controller.recordError(error) }
+        }
+        if (schedulerFailure != null) throw schedulerFailure
+    }
     suspend fun recover() {
         database.events().expireHttp(System.currentTimeMillis())
         controller.expireActions()
+        controller.reconcileRingDeadlines()
         if (configuration.load() != null && !database.events().httpPaused()) {
             database.events().pendingCallIds().forEach { CallbackScheduler.enqueue(appContext, it, 0) }
         }

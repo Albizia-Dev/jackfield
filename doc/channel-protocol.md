@@ -24,9 +24,14 @@
 |---|---|
 | `initialize` | необязательный `callbacks`; отсутствие отключает callbacks |
 | `capabilities`, `diagnostics`, `pushTokens` | нет |
-| `reportIncomingCall` | `callId`, `caller`, `media` |
+| `reportIncomingCall` | `callId`, `caller`, `media`, `expiresAt` |
 | `startOutgoingCall` | `callId`, `callee`, `media` |
 | `updateCall` | `callId`; необязательные `caller`, `media` |
+
+`expiresAt` — ISO-8601 UTC deadline фазы ringing, не более чем на пять минут в
+будущем. Просроченное приглашение не показывается. Deadline сохраняется в
+snapshot; после следующего разрешённого ОС execution window адаптер атомарно
+создаёт `ended(reason: missed)` и закрывает системное представление.
 | `endCall` | `callId`, `reason` |
 | `completeAction` | `actionId`, логический `succeeded` |
 | `acknowledgeEvents` | список строк `eventIds`; пустой список допустим |

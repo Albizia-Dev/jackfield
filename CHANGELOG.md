@@ -1,5 +1,11 @@
 ## 0.0.2 — 2026-09-30
 
+Incoming calls now carry a mandatory, persisted `expiresAt` ringing deadline.
+Android, iOS, macOS, and Web reconcile unanswered calls to one durable `missed`
+terminal event after live timers or recovery execution. The Go/FCM stand emits
+the same deadline, and Android terminal events remain available to Flutter even
+when the bounded HTTP callback queue is full.
+
 Fix Android call presentation by running CallStyle notifications from a
 phone-call foreground service, and keep the public API available when host
 WorkManager initialization is absent. Native Android and Apple failures now

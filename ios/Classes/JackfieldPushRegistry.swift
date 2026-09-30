@@ -4,11 +4,11 @@ import PushKit
 @available(iOS 13.0, *)
 final class JackfieldPushRegistry: NSObject, PKPushRegistryDelegate {
   private let registry = PKPushRegistry(queue: .main)
-  private let incoming: (String, String, String, String, @escaping () -> Void) -> Void
+  private let incoming: (String, String, String, String, Date, @escaping () -> Void) -> Void
   private let ended: (String, String, @escaping () -> Void) -> Void
   private let tokenChanged: (String?, Bool) -> Void
 
-  init(incoming: @escaping (String, String, String, String, @escaping () -> Void) -> Void,
+  init(incoming: @escaping (String, String, String, String, Date, @escaping () -> Void) -> Void,
        ended: @escaping (String, String, @escaping () -> Void) -> Void,
        tokenChanged: @escaping (String?, Bool) -> Void) {
     self.incoming = incoming; self.ended = ended; self.tokenChanged = tokenChanged
@@ -47,9 +47,19 @@ final class JackfieldPushRegistry: NSObject, PKPushRegistryDelegate {
           let caller = data["caller"] as? [String: String],
           let callerId = caller["id"], !callerId.isEmpty,
           let name = caller["displayName"], !name.isEmpty,
-          let media = data["media"] as? String, ["audio", "video"].contains(media)
+          let media = data["media"] as? String, ["audio", "video"].contains(media),
+          let expiresText = data["expiresAt"] as? String,
+          let expiresAt = ISO8601DateFormatter.jackfield.date(from: expiresText)
     else { JackfieldLog.error("pushkit.invalid_incoming"); completion(); return }
     JackfieldLog.info("pushkit.incoming_dispatch", callId: callId, detail: "media=\(media)")
-    incoming(callId, callerId, name, media, completion)
+    incoming(callId, callerId, name, media, expiresAt, completion)
   }
+}
+
+private extension ISO8601DateFormatter {
+  static let jackfield: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter
+  }()
 }

@@ -31,6 +31,27 @@ class RecoveryWorker(context: Context, parameters: WorkerParameters) : Coroutine
     }
 }
 
+class RingDeadlineWorker(context: Context, parameters: WorkerParameters) : CoroutineWorker(context, parameters) {
+    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        val runtime = JackfieldRuntime.get(applicationContext)
+        try { runtime.controller.reconcileRingDeadlines(); Result.success() }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) { runtime.controller.recordError(error); Result.retry() }
+    }
+}
+
+internal object RingDeadlineScheduler {
+    fun enqueue(context: Context, callId: String, delay: Long) {
+        val request = OneTimeWorkRequestBuilder<RingDeadlineWorker>()
+            .setInputData(workDataOf("callId" to callId))
+            .setInitialDelay(delay.coerceAtLeast(0), TimeUnit.MILLISECONDS)
+            .build()
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            "jackfield.ring-deadline.$callId", ExistingWorkPolicy.REPLACE, request,
+        )
+    }
+}
+
 internal object CallbackScheduler {
     fun enqueue(context: Context, callId: String, delay: Long) {
         val request = OneTimeWorkRequestBuilder<CallbackWorker>()

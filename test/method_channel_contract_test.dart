@@ -12,6 +12,7 @@ const snapshot = <String, Object?>{
   'caller': {'id': 'peer-1', 'displayName': 'Peer'},
   'actionId': 'action-1',
   'actionDeadline': '2026-01-01T00:01:00.000Z',
+  'expiresAt': '2099-01-01T00:00:45.000Z',
   'actionReceipts': [
     {
       'actionId': 'old-action',
@@ -131,10 +132,11 @@ void main() {
 
   test('invalid outgoing payload never crosses the channel', () async {
     final result = await api.reportIncomingCall(
-      const IncomingCall(
-        callId: CallId(''),
-        caller: Caller(id: 'peer', displayName: 'Peer'),
+      IncomingCall(
+        callId: const CallId(''),
+        caller: const Caller(id: 'peer', displayName: 'Peer'),
         media: CallMedia.audio,
+        expiresAt: DateTime.utc(2099),
       ),
     );
     expect(
@@ -208,10 +210,11 @@ void main() {
     response = {'version': 1, 'status': 'success', 'value': snapshot};
     const caller = Caller(id: 'peer-1', displayName: 'Peer');
     final incoming = await api.reportIncomingCall(
-      const IncomingCall(
-        callId: CallId('call-1'),
+      IncomingCall(
+        callId: const CallId('call-1'),
         caller: caller,
         media: CallMedia.audio,
+        expiresAt: DateTime.utc(2099, 1, 1, 0, 0, 45),
       ),
     );
     final value = (incoming as JackfieldSuccess<CallSnapshot>).value;
@@ -219,6 +222,7 @@ void main() {
     expect(value.caller!.displayName, 'Peer');
     expect(value.actionId, const ActionId('action-1'));
     expect(value.actionDeadline, DateTime.utc(2026, 1, 1, 0, 1));
+    expect(value.expiresAt, DateTime.utc(2099, 1, 1, 0, 0, 45));
     expect(
       value.actionReceipts.single.error!.code,
       JackfieldErrorCode.deadlineExceeded,
@@ -229,6 +233,7 @@ void main() {
       'callId': 'call-1',
       'caller': {'id': 'peer-1', 'displayName': 'Peer'},
       'media': 'audio',
+      'expiresAt': '2099-01-01T00:00:45.000Z',
     });
     await api.startOutgoingCall(
       const OutgoingCall(

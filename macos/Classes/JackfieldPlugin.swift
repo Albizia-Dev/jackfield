@@ -82,7 +82,8 @@ public final class JackfieldPlugin: NSObject, @preconcurrency FlutterPlugin {
                   "lastError": self.lastError.map { ["code": $0] } ?? NSNull()] as [String: Any])
         case "reportIncomingCall":
           let (id, person, media) = try Self.callData(data, person: "caller")
-          result(Self.success(try await controller.reportIncoming(callId: id, callerId: person.0, callerName: person.1, media: media).toWire()))
+          let expiresAt = try Self.timestamp(data["expiresAt"])
+          result(Self.success(try await controller.reportIncoming(callId: id, callerId: person.0, callerName: person.1, media: media, expiresAt: expiresAt).toWire()))
         case "startOutgoingCall":
           let (id, person, media) = try Self.callData(data, person: "callee")
           result(Self.success(try await controller.startOutgoing(callId: id, calleeId: person.0, calleeName: person.1, media: media).toWire()))
@@ -237,6 +238,13 @@ public final class JackfieldPlugin: NSObject, @preconcurrency FlutterPlugin {
   private static func person(_ value: Any?) throws -> (String, String) {
     guard let map = value as? [String: Any] else { throw JackfieldCoreError.protocolFailure }
     return (try nonempty(map["id"]), try nonempty(map["displayName"]))
+  }
+  private static func timestamp(_ value: Any?) throws -> Date {
+    guard let text = value as? String else { throw JackfieldCoreError.protocolFailure }
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    guard let date = formatter.date(from: text) else { throw JackfieldCoreError.protocolFailure }
+    return date
   }
   private static func callData(_ data: [String: Any], person key: String) throws -> (String, (String, String), String) {
     (try nonempty(data["callId"]), try person(data[key]), try media(data["media"]))

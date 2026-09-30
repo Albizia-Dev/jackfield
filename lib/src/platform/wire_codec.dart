@@ -74,6 +74,7 @@ abstract final class WireCodec {
     'callId': _validatedId(call.callId.value),
     'caller': _encodeCaller(call.caller),
     'media': call.media.name,
+    'expiresAt': call.expiresAt.toUtc().toIso8601String(),
   };
 
   /// Encodes and validates an outgoing call before crossing a channel.
@@ -235,7 +236,7 @@ abstract final class WireCodec {
     final data = _object(
       payload,
       {'callId', 'state', 'media', 'actionReceipts'},
-      {'caller', 'actionId', 'actionDeadline'},
+      {'caller', 'actionId', 'actionDeadline', 'expiresAt'},
     );
     return CallSnapshot(
       callId: CallId(_nonemptyString(data, 'callId')),
@@ -248,6 +249,9 @@ abstract final class WireCodec {
       actionDeadline: data['actionDeadline'] == null
           ? null
           : _timestamp(data, 'actionDeadline'),
+      expiresAt: data['expiresAt'] == null
+          ? null
+          : _timestamp(data, 'expiresAt'),
       actionReceipts: _list(data['actionReceipts']).map((value) {
         final receipt = _object(value, {'actionId', 'succeeded'}, {'error'});
         return CallActionReceipt(

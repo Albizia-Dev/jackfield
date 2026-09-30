@@ -83,8 +83,9 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
           result(Self.success(try await self.requestPermissions(data)))
         case "reportIncomingCall":
           let (id, person, media) = try Self.callData(data, person: "caller")
+          let expiresAt = try Self.timestamp(data["expiresAt"])
           guard let controller = self.controller else { throw JackfieldCoreError.platformFailure }
-          result(Self.success(try await controller.reportIncoming(callId: id, callerId: person.0, callerName: person.1, media: media).toWire()))
+          result(Self.success(try await controller.reportIncoming(callId: id, callerId: person.0, callerName: person.1, media: media, expiresAt: expiresAt).toWire()))
         case "startOutgoingCall":
           let (id, person, media) = try Self.callData(data, person: "callee")
           guard let controller = self.controller else { throw JackfieldCoreError.platformFailure }
@@ -174,10 +175,10 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
   }
 
   private func startPushRegistry() {
-    registry = JackfieldPushRegistry(incoming: { [weak self] callId, callerId, callerName, media, completion in
+    registry = JackfieldPushRegistry(incoming: { [weak self] callId, callerId, callerName, media, expiresAt, completion in
       guard let self, let controller = self.controller else { completion(); return }
       Task {
-        do { _ = try await controller.reportIncoming(callId: callId, callerId: callerId, callerName: callerName, media: media) }
+        do { _ = try await controller.reportIncoming(callId: callId, callerId: callerId, callerName: callerName, media: media, expiresAt: expiresAt) }
         catch { Self.logFailure("push.reportIncomingCall", error) }
         completion()
       }
@@ -248,6 +249,13 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
     let text = try nonempty(value)
     guard ["audio", "video"].contains(text) else { throw JackfieldCoreError.protocolFailure }
     return text
+  }
+  private static func timestamp(_ value: Any?) throws -> Date {
+    guard let text = value as? String else { throw JackfieldCoreError.protocolFailure }
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    guard let date = formatter.date(from: text) else { throw JackfieldCoreError.protocolFailure }
+    return date
   }
   private static func person(_ value: Any?) throws -> (String, String) {
     guard let map = value as? [String: Any] else { throw JackfieldCoreError.protocolFailure }

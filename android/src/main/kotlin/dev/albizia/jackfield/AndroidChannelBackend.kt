@@ -16,7 +16,7 @@ internal class AndroidChannelBackend(private val controller: CallController) {
                 "capabilities" -> { Wire.request(arguments, emptySet()); controller.capabilities() }
                 "diagnostics" -> { Wire.request(arguments, emptySet()); controller.diagnostics() }
                 "pushTokens" -> { Wire.request(arguments, emptySet()); Wire.success(controller.pushTokens()) }
-                "reportIncomingCall" -> Wire.success(controller.reportIncoming(Wire.request(arguments, setOf("callId", "caller", "media"))).toWire())
+                "reportIncomingCall" -> Wire.success(controller.reportIncoming(Wire.request(arguments, setOf("callId", "caller", "media", "expiresAt"))).toWire())
                 "startOutgoingCall" -> Wire.success(controller.startOutgoing(Wire.request(arguments, setOf("callId", "callee", "media"))).toWire())
                 "updateCall" -> Wire.success(controller.updateCall(Wire.request(arguments, setOf("callId"), setOf("caller", "media"))).toWire())
                 "setCallConnected" -> {

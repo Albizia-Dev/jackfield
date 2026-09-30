@@ -36,6 +36,7 @@ func BuildInvite(token string, call calls.Call, ttl time.Duration) *messaging.Me
 		Data: map[string]string{
 			"version": "1", "type": "incoming", "callId": call.ID,
 			"callerId": call.Caller.ID, "callerName": call.Caller.DisplayName, "media": call.Media,
+			"expiresAt": call.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000Z07:00"),
 		},
 		Android: &messaging.AndroidConfig{TTL: &ttl, Priority: "high", CollapseKey: call.ID},
 	}

@@ -26,6 +26,7 @@ class CallController(
     private val schedule: (String, Long) -> Unit,
     private val clock: () -> Long = System::currentTimeMillis,
     private val eventId: () -> String = { UUID.randomUUID().toString() },
+    private val scheduleRingDeadline: (String, Long) -> Unit = { _, _ -> },
 ) {
     private val mutex = Mutex()
     private val dao get() = database.events()
@@ -50,12 +51,17 @@ class CallController(
     suspend fun startOutgoing(arguments: Map<String, Any?>): CallEntity = start(arguments, false)
     private suspend fun start(arguments: Map<String, Any?>, incoming: Boolean): CallEntity = mutex.withLock {
         val partyField = if (incoming) "caller" else "callee"
-        val data = Wire.request(arguments, setOf("callId", partyField, "media"))
+        val required = if (incoming) setOf("callId", partyField, "media", "expiresAt") else setOf("callId", partyField, "media")
+        val data = Wire.request(arguments, required)
         val id = Wire.string(data["callId"])
         val party = Wire.caller(data[partyField])
         val media = Wire.media(data["media"])
+        val now = clock()
+        val expiresAt = if (incoming) Wire.instant(data["expiresAt"]) else null
         dao.call(id)?.let { return@withLock it }
-        val call = CallEntity(id, if (incoming) "ringing" else "connecting", media, party.getValue("id"), party.getValue("displayName"))
+        if (expiresAt != null && expiresAt <= now) throw JackfieldFailure("deadlineExceeded")
+        if (expiresAt != null && expiresAt > boundedAdd(now, MAX_RING_DURATION_MS)) Wire.fail()
+        val call = CallEntity(id, if (incoming) "ringing" else "connecting", media, party.getValue("id"), party.getValue("displayName"), expiresAt)
         dao.persist(call, null, 0)
         try { presentation.show(call, incoming) }
         catch (error: Exception) {
@@ -78,6 +84,8 @@ class CallController(
             }
             throw error
         }
+        if (expiresAt != null) try { scheduleRingDeadline(id, (expiresAt - clock()).coerceAtLeast(0)) }
+        catch (error: Exception) { recordError(error) }
         call
     }
 
@@ -152,16 +160,24 @@ class CallController(
         val current = requireCall(callId)
         try {
             if (current.state in setOf("ended", "failed")) return@withLock current
-            val next = current.copy(state = "ended", sequence = current.sequence + 1)
-            val config = configuration.load()
-            val now = clock()
-            admit(next, EventEntity(eventId(), callId, next.sequence, now, "ended", reason = reason,
-                expiresAt = boundedAdd(now, config?.timeToLiveMs ?: 86_400_000), httpState = if (config == null) "disabled" else "pending"), config)
-            next
+            terminate(current, reason)
         } finally {
             // Server reconciliation must close OS UI even when journal admission fails.
             presentation.end(callId)
         }
+    }
+
+    private fun terminate(current: CallEntity, reason: String): CallEntity {
+        val next = current.copy(state = "ended", sequence = current.sequence + 1)
+        val config = configuration.load()
+        val now = clock()
+        val capacityDropped = config != null && dao.httpCount() >= config.maxPendingEvents
+        val event = EventEntity(eventId(), current.callId, next.sequence, now, "ended", reason = reason,
+            expiresAt = boundedAdd(now, config?.timeToLiveMs ?: 86_400_000),
+            httpState = when { config == null -> "disabled"; capacityDropped -> "capacity_dropped"; else -> "pending" })
+        admit(next, event, config?.takeUnless { capacityDropped })
+        if (capacityDropped) dao.recordError("storageFull")
+        return next
     }
 
     private fun admit(snapshot: CallEntity, event: EventEntity, config: CallbackConfiguration?) {
@@ -181,6 +197,19 @@ class CallController(
         val expired = mutex.withLock { dao.calls().filter { it.state == "connecting" && it.actionDeadline != null && clock() > it.actionDeadline }.mapNotNull { it.actionId } }
         expired.forEach { try { completeAction(it, false) } catch (failure: JackfieldFailure) { if (failure.code != "deadlineExceeded") throw failure } }
     }
+    suspend fun reconcileRingDeadlines() = mutex.withLock {
+        val now = clock()
+        dao.calls().filter { it.state == "ringing" && it.expiresAt != null }.forEach { current ->
+            val deadline = current.expiresAt!!
+            if (deadline <= now) {
+                try { terminate(current, "missed") }
+                finally { presentation.end(current.callId) }
+            } else {
+                try { scheduleRingDeadline(current.callId, deadline - now) }
+                catch (error: Exception) { recordError(error) }
+            }
+        }
+    }
     fun snapshot(callId: String): CallEntity? = dao.call(callId)
     fun recordError(error: Throwable) { try { dao.recordError(Wire.code(error)) } catch (_: Exception) { /* Storage may itself be unavailable. */ } }
     private fun requireCall(id: String) = dao.call(Wire.string(id)) ?: throw JackfieldFailure("invalidState")
@@ -199,4 +228,6 @@ class CallController(
         if (removed) dao.removeToken(token) else dao.addToken(token)
         tokenListener?.invoke(mapOf("version" to 1, "token" to mapOf("provider" to provider, "value" to value), "removed" to removed))
     }
+
+    companion object { const val MAX_RING_DURATION_MS = 300_000L }
 }

@@ -15,6 +15,7 @@ class JackfieldFirebaseMessageTest {
                 "callerId" to "person-1",
                 "callerName" to "Alice",
                 "media" to "audio",
+                "expiresAt" to "2026-09-30T04:00:45Z",
             ),
         )
 
@@ -24,6 +25,7 @@ class JackfieldFirebaseMessageTest {
                 callerId = "person-1",
                 callerName = "Alice",
                 media = "audio",
+                expiresAt = "2026-09-30T04:00:45Z",
             ),
             message,
         )
@@ -53,6 +55,14 @@ class JackfieldFirebaseMessageTest {
     @Test
     fun `malformed or unsupported data is ignored`() {
         assertNull(JackfieldFirebaseMessage.parse(mapOf("type" to "incoming")))
+        assertNull(
+            JackfieldFirebaseMessage.parse(
+                mapOf(
+                    "version" to "1", "type" to "incoming", "callId" to "call-1",
+                    "callerId" to "person-1", "callerName" to "Alice", "media" to "audio",
+                ),
+            ),
+        )
         assertNull(
             JackfieldFirebaseMessage.parse(
                 mapOf(

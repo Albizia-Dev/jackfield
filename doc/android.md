@@ -148,8 +148,16 @@ val result = JackfieldPushReceiver.reportIncomingCall(context, mapOf(
     "callId" to "call-1",
     "caller" to mapOf("id" to "peer-1", "displayName" to "Caller"),
     "media" to "audio",
+    "expiresAt" to "2026-09-30T04:00:45.000Z",
 ))
 ```
+
+`expiresAt` обязателен, должен быть в будущем и не дальше пяти минут. Он
+сохраняется в Room schema v3. Живой coroutine и уникальный WorkManager job
+соревнуются за один идемпотентный переход в `ended(reason: missed)`; recovery
+после restart заново завершает просроченные ringing snapshots. ОС всё равно не
+обещает точное время фонового запуска, поэтому deadline означает «не звонить
+после этой точки», а не гарантию исполнения ровно в указанную миллисекунду.
 
 `JackfieldPushReceiver.updatePushToken(context, provider, value, removed)`
 сохраняет добавление/удаление токена и публикует `jackfield/push_token_updates`.

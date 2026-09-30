@@ -87,11 +87,12 @@ public struct CallRecord: Codable, Equatable, Sendable {
   public var callerName: String?
   public var actionId: String?
   public var actionDeadline: Date?
+  public var expiresAt: Date?
   public var actionReceipts: [ActionReceipt]
   public var systemUUID: UUID?
-  public init(callId: String, state: String, media: String, callerId: String? = nil, callerName: String? = nil, actionId: String? = nil, actionDeadline: Date? = nil, actionReceipts: [ActionReceipt] = [], systemUUID: UUID? = nil) {
+  public init(callId: String, state: String, media: String, callerId: String? = nil, callerName: String? = nil, actionId: String? = nil, actionDeadline: Date? = nil, expiresAt: Date? = nil, actionReceipts: [ActionReceipt] = [], systemUUID: UUID? = nil) {
     self.callId = callId; self.state = state; self.media = media; self.callerId = callerId; self.callerName = callerName
-    self.actionId = actionId; self.actionDeadline = actionDeadline; self.actionReceipts = actionReceipts; self.systemUUID = systemUUID
+    self.actionId = actionId; self.actionDeadline = actionDeadline; self.expiresAt = expiresAt; self.actionReceipts = actionReceipts; self.systemUUID = systemUUID
   }
   public func toWire() -> [String: Any] {
     var value: [String: Any] = ["callId": callId, "state": state, "media": media, "actionReceipts": actionReceipts.map { receipt in
@@ -102,6 +103,7 @@ public struct CallRecord: Codable, Equatable, Sendable {
     if let callerId, let callerName { value["caller"] = ["id": callerId, "displayName": callerName] }
     if let actionId { value["actionId"] = actionId }
     if let actionDeadline { value["actionDeadline"] = WireEnvelope.timestamp(actionDeadline) }
+    if let expiresAt { value["expiresAt"] = WireEnvelope.timestamp(expiresAt) }
     return value
   }
 }

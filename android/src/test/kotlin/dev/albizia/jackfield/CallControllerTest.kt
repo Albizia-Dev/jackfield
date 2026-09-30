@@ -132,14 +132,30 @@ class CallControllerTest {
         assertFalse(db.events().httpPaused())
     }
 
-    @Test fun `server end removes presentation even when bounded outbox rejects new event`() = runTest {
+    @Test fun `terminal event remains durable when bounded HTTP outbox is full`() = runTest {
         controller.initialize(callbacks.copy(maxPendingEvents = 1))
         controller.reportIncoming(incoming)
         controller.requestAnswer("call-1", "action-1", 6000)
         controller.eventListener = null
-        assertEquals("storageFull", assertFailsWith<JackfieldFailure> { controller.endCall("call-1", "remote") }.code)
+        assertEquals("ended", controller.endCall("call-1", "remote").state)
         assertTrue(ended.contains("call-1"))
-        assertEquals(1, db.events().pendingFlutter().size)
+        assertEquals(2, db.events().pendingFlutter().size)
+        assertEquals(1, db.events().pendingHttp().size)
+        assertEquals(mapOf("code" to "storageFull"), controller.diagnostics()["lastError"])
+    }
+
+    @Test fun `ring deadline survives storage and autonomously emits missed`() = runTest {
+        controller.initialize(callbacks)
+        controller.reportIncoming(incoming)
+        assertEquals(60_000L, controller.snapshot("call-1")!!.expiresAt)
+        controller.eventListener = null
+        now = 60_000L
+
+        controller.reconcileRingDeadlines()
+
+        assertEquals("ended", controller.snapshot("call-1")!!.state)
+        assertEquals("missed", db.events().pendingFlutter().single().reason)
+        assertEquals(listOf("call-1"), ended)
     }
 
     @Test fun `replay survives listener replacement and acknowledge is delivery only`() = runTest {
@@ -210,7 +226,7 @@ class CallControllerTest {
     }
 }
 
-internal val incoming = mapOf<String, Any?>("version" to 1, "callId" to "call-1", "caller" to mapOf("id" to "peer-1", "displayName" to "Caller"), "media" to "audio")
+internal val incoming = mapOf<String, Any?>("version" to 1, "callId" to "call-1", "caller" to mapOf("id" to "peer-1", "displayName" to "Caller"), "media" to "audio", "expiresAt" to "1970-01-01T00:01:00.000Z")
 internal val callbacks = CallbackConfiguration("https://example.test/callback", "secret", 86_400_000, 1000)
 internal class MemoryConfiguration : ConfigurationStore {
     private var config: CallbackConfiguration? = null

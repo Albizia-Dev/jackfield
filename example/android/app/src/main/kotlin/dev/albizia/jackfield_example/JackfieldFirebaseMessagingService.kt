@@ -29,7 +29,8 @@ class JackfieldFirebaseMessagingService : FirebaseMessagingService() {
                             .put("id", parsed.callerId)
                             .put("displayName", parsed.callerName),
                     )
-                    .put("media", parsed.media),
+                    .put("media", parsed.media)
+                    .put("expiresAt", parsed.expiresAt),
             )
             is JackfieldFirebaseMessage.End -> dispatch(
                 JackfieldPushReceiver.ACTION_END,

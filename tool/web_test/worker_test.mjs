@@ -156,7 +156,7 @@ test('notification answer persists action before delivery', async () => {
   const { scope, listeners, clients } = harness();
   scope.JackfieldWorker.install();
   clients.push({ postMessage: () => {} });
-  await scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio', expiresAt: new Date(Date.now() + 60000).toISOString() } });
   await dispatch(listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1', eventId: 'event-1' }, close: () => {} } });
   const lease = await scope.JackfieldWorker.claim('tab');
   const events = await scope.JackfieldWorker.pending('tab', lease.token);
@@ -174,10 +174,10 @@ test('callback overflow retains Flutter event and action receipt', async () => {
     timeToLiveMs: 60000,
     maxPendingEvents: 1,
   });
-  await scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio', expiresAt: new Date(Date.now() + 60000).toISOString() } });
   const notification = { data: { callId: 'call-1' }, close: () => {} };
   await dispatch(listeners, 'notificationclick', { action: 'answer', notification });
-  await scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-2', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-2', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio', expiresAt: new Date(Date.now() + 60000).toISOString() } });
   await dispatch(listeners, 'notificationclick', { action: 'reject', notification: { data: { callId: 'call-2' }, close: () => {} } });
   assert.equal((await records(scope.JackfieldDatabaseName, 'outbox')).length, 1);
   assert.equal((await records(scope.JackfieldDatabaseName, 'inbox')).length, 2);
@@ -190,7 +190,7 @@ test('callback uses envelope, terminal redirect and occurredAt TTL', async () =>
   const requests = [];
   h.scope.fetch = async (_, options) => { requests.push(options); return { status: 302, headers: { get: () => null } }; };
   await h.scope.JackfieldWorker.configure({ endpoint: 'https://callbacks.example.test/events', auth: { type: 'bearer', token: 'token' }, timeToLiveMs: 60000, maxPendingEvents: 10 });
-  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'video' } });
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'video', expiresAt: new Date(Date.now() + 60000).toISOString() } });
   await dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
   assert.equal(requests[0].redirect, 'manual');
   assert.equal(JSON.parse(requests[0].body).event.type, 'answer_requested');
@@ -201,7 +201,7 @@ test('callback uses envelope, terminal redirect and occurredAt TTL', async () =>
 test('lease requires token for pending and ACK and rotates on takeover', async () => {
   const h = harness();
   h.scope.JackfieldWorker.install({ leaseMs: 10 });
-  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio', expiresAt: new Date(Date.now() + 60000).toISOString() } });
   await dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
   const a = await h.scope.JackfieldWorker.command({ version: 1, command: 'claim', owner: 'a' });
   assert.equal(a.status, 'success');
@@ -219,7 +219,7 @@ test('lease requires token for pending and ACK and rotates on takeover', async (
 test('answer completion is idempotent and preserves caller and media on reject', async () => {
   const h = harness();
   h.scope.JackfieldWorker.install();
-  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'video' } });
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'video', expiresAt: new Date(Date.now() + 60000).toISOString() } });
   await dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
   const pending = await records(h.scope.JackfieldDatabaseName, 'snapshots');
   assert.equal(pending[0].state, 'connecting');
@@ -235,7 +235,7 @@ test('answer completion is idempotent and preserves caller and media on reject',
 test('concurrent notification clicks produce one action', async () => {
   const h = harness();
   h.scope.JackfieldWorker.install();
-  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio', expiresAt: new Date(Date.now() + 60000).toISOString() } });
   const click = action => dispatch(h.listeners, 'notificationclick', { action, notification: { data: { callId: 'call-1' }, close() {} } });
   await Promise.all([click('answer'), click('reject')]);
   assert.equal((await records(h.scope.JackfieldDatabaseName, 'inbox')).filter(r => r.event).length, 1);
@@ -252,7 +252,7 @@ test('concurrent drains claim once and preserve per-call ordering', async () => 
     return { status: 204, headers: { get: () => null } };
   };
   await h.scope.JackfieldWorker.configure({ endpoint: 'https://callbacks.example.test/events', auth: { type: 'bearer', token: 'token' }, timeToLiveMs: 60000, maxPendingEvents: 10 });
-  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio', expiresAt: new Date(Date.now() + 60000).toISOString() } });
   const click = dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
   while (requests.length === 0) await new Promise(resolve => setTimeout(resolve, 1));
   await h.scope.JackfieldWorker.drainOutbox();
@@ -267,7 +267,7 @@ test('retry outcome and HTTP diagnostic are durable independently of Flutter inb
   h.scope.registration.sync = { register: async () => { throw new Error('unsupported'); } };
   h.scope.fetch = async () => ({ status: 503, headers: { get: name => name === 'Retry-After' ? '2' : null } });
   await h.scope.JackfieldWorker.configure({ endpoint: 'https://callbacks.example.test/events', auth: { type: 'bearer', token: 'token' }, timeToLiveMs: 60000, maxPendingEvents: 10 });
-  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio', expiresAt: new Date(Date.now() + 60000).toISOString() } });
   await dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
   const item = (await records(h.scope.JackfieldDatabaseName, 'outbox'))[0];
   assert.equal(item.state, 'pending');
@@ -282,7 +282,7 @@ test('scheduler failure records HTTP diagnostic and keeps action receipt', async
   h.scope.JackfieldWorker.install();
   h.scope.registration.sync = { register: async () => { throw new Error('scheduler unavailable'); } };
   await h.scope.JackfieldWorker.configure({ endpoint: 'https://callbacks.example.test/events', auth: { type: 'bearer', token: 'token' }, timeToLiveMs: 60000, maxPendingEvents: 10 });
-  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio', expiresAt: new Date(Date.now() + 60000).toISOString() } });
   await dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
   assert.equal((await records(h.scope.JackfieldDatabaseName, 'receipts')).filter(r => r.deadline).length, 1);
   assert.equal((await records(h.scope.JackfieldDatabaseName, 'inbox')).filter(r => r.event).length, 1);
@@ -316,7 +316,7 @@ test('notification from a previous login session cannot create an action', async
 test('reportIncoming cannot revive an ended call', async () => {
   const h = harness();
   h.scope.JackfieldWorker.install();
-  const message = { version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'video' } };
+  const message = { version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'video', expiresAt: new Date(Date.now() + 60000).toISOString() } };
   await h.scope.JackfieldWorker.command(message);
   await h.scope.JackfieldWorker.command({ version: 1, command: 'end', callId: 'call-1' });
   const again = await h.scope.JackfieldWorker.command(message);
@@ -333,7 +333,7 @@ test('end persists one ordered event, closes visible UI, and keeps action receip
     ...(!closed.includes('call-1') ? [{ tag: 'call-1', close: () => closed.push('call-1') }] : []),
     { tag: 'call-2', close: () => closed.push('call-2') },
   ];
-  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio', expiresAt: new Date(Date.now() + 60000).toISOString() } });
   await dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
   const before = (await records(h.scope.JackfieldDatabaseName, 'inbox')).filter(item => item.event);
   assert.equal(before.length, 1);
@@ -364,7 +364,7 @@ test('endpoint rotation wakes auth-paused callbacks and an old 401 cannot pause 
     return { status: 204, headers: { get: () => null } };
   };
   await h.scope.JackfieldWorker.configure(oldConfig);
-  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio', expiresAt: new Date(Date.now() + 60000).toISOString() } });
   const click = dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
   while (!releaseOld) await new Promise(resolve => setTimeout(resolve, 1));
   await h.scope.JackfieldWorker.configure(newConfig);
@@ -388,7 +388,7 @@ test('endpoint-only config rotation resumes a previously paused callback', async
     return { status: url === oldConfig.endpoint ? 403 : 204, headers: { get: () => null } };
   };
   await h.scope.JackfieldWorker.configure(oldConfig);
-  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio', expiresAt: new Date(Date.now() + 60000).toISOString() } });
   await dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
   assert.equal((await h.scope.JackfieldWorker.command({ version: 1, command: 'diagnostics' })).value.authPaused, true);
   await h.scope.JackfieldWorker.configure({ ...oldConfig, endpoint: 'https://new.example.test/events' });
@@ -410,7 +410,7 @@ test('a callback rotated away and back cannot inherit a stale in-flight 401', as
     return { status: 204, headers: { get: () => null } };
   };
   await h.scope.JackfieldWorker.configure(original);
-  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio', expiresAt: new Date(Date.now() + 60000).toISOString() } });
   const click = dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
   while (!releaseOld) await new Promise(resolve => setTimeout(resolve, 1));
   await h.scope.JackfieldWorker.configure({ ...original, endpoint: 'https://other.example.test/events' });
@@ -426,7 +426,7 @@ test('a callback rotated away and back cannot inherit a stale in-flight 401', as
 test('expired answer is terminalized after worker restart and repeated completion fails with deadlineExceeded', async () => {
   const h = harness();
   h.scope.JackfieldWorker.install();
-  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio', expiresAt: new Date(Date.now() + 60000).toISOString() } });
   const ids = ['action-id', 'z-answer-event'];
   h.scope.crypto = { randomUUID: () => ids.shift() || crypto.randomUUID() };
   await dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
@@ -464,7 +464,7 @@ test('failed notification presentation is retryable with the same callId', async
     attempts++;
     if (attempts === 1) throw new Error('permission revoked');
   };
-  const message = { version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } };
+  const message = { version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio', expiresAt: new Date(Date.now() + 60000).toISOString() } };
   const failed = await h.scope.JackfieldWorker.command(message);
   assert.equal(failed.error.code, 'platformFailure');
   assert.equal((await records(h.scope.JackfieldDatabaseName, 'snapshots'))[0].state, 'presentationFailed');
@@ -500,7 +500,7 @@ test('worker restart reconciles an interrupted presentation before retrying its 
   first.scope.JackfieldWorker.install();
   await first.scope.JackfieldWorker.claim('setup');
   first.scope.registration.showNotification = () => new Promise(() => {});
-  const message = { version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } };
+  const message = { version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio', expiresAt: new Date(Date.now() + 60000).toISOString() } };
   void first.scope.JackfieldWorker.command(message);
   while ((await records(first.scope.JackfieldDatabaseName, 'snapshots'))[0]?.state !== 'presenting')
     await new Promise(resolve => setTimeout(resolve, 1));
@@ -528,7 +528,7 @@ for (const source of ['reportIncoming', 'push']) {
     });
     h.scope.registration.getNotifications = async () => visible.filter(item => !item.closed);
     const pendingShow = source === 'push' ? pushCall(h) : h.scope.JackfieldWorker.command({
-      version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' },
+      version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio', expiresAt: new Date(Date.now() + 60000).toISOString() },
     });
     while (!releaseShow) await new Promise(resolve => setTimeout(resolve, 1));
     const end = await h.scope.JackfieldWorker.command({ version: 1, command: 'end', callId: 'call-1', reason: 'remote' });
@@ -557,7 +557,7 @@ for (const source of ['reportIncoming', 'push']) {
     });
     h.scope.registration.getNotifications = async () => visible.filter(item => !item.closed);
     const pendingShow = source === 'push' ? pushCall(h) : h.scope.JackfieldWorker.command({
-      version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' },
+      version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio', expiresAt: new Date(Date.now() + 60000).toISOString() },
     });
     while (!releaseShow) await new Promise(resolve => setTimeout(resolve, 1));
     abortNextTransaction(h, (names, mode) => mode === 'readwrite' && names.includes('snapshots') && names.includes('inbox'));
@@ -576,7 +576,7 @@ test('end closes a visible notification even when its IndexedDB transaction abor
   h.scope.JackfieldWorker.install();
   const visible = { tag: 'call-1', closed: false, close() { this.closed = true; } };
   h.scope.registration.getNotifications = async () => [visible];
-  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio', expiresAt: new Date(Date.now() + 60000).toISOString() } });
   abortNextTransaction(h, (names, mode) => mode === 'readwrite' && names.includes('snapshots') && names.includes('inbox'));
   await assert.rejects(h.scope.JackfieldWorker.command({ version: 1, command: 'end', callId: 'call-1', reason: 'remote' }));
   assert.equal(visible.closed, true);
@@ -596,7 +596,7 @@ for (const source of ['reportIncoming', 'push']) {
     if (source === 'push') await assert.rejects(pushCall(h));
     else {
       const outcome = await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming',
-        call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+        call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio', expiresAt: new Date(Date.now() + 60000).toISOString() } });
       assert.equal(outcome.error.code, 'platformFailure');
     }
     assert.equal(visible.closed, true);
@@ -611,7 +611,7 @@ test('deadline recovery does not self-register one-shot Background Sync', async 
   const periodic = [];
   h.scope.registration.sync = { register: async tag => syncs.push(tag) };
   h.scope.registration.periodicSync = { register: async tag => periodic.push(tag) };
-  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio', expiresAt: new Date(Date.now() + 60000).toISOString() } });
   await dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
   assert.equal(syncs.includes('jackfield-deadline'), false);
   assert.equal(periodic.includes('jackfield-deadline'), true);
@@ -619,6 +619,32 @@ test('deadline recovery does not self-register one-shot Background Sync', async 
   await updateRecord(h.scope.JackfieldDatabaseName, 'receipts', receipt.id, current => ({ ...current, deadline: Date.now() - 1 }));
   await dispatch(h.listeners, 'periodicsync', { tag: 'jackfield-deadline' });
   assert.equal((await records(h.scope.JackfieldDatabaseName, 'snapshots'))[0].state, 'failed');
+});
+
+test('ring expiry is recovered as one durable missed event', async () => {
+  const h = harness();
+  h.scope.JackfieldWorker.install();
+  const outcome = await h.scope.JackfieldWorker.command({
+    version: 1,
+    command: 'reportIncoming',
+    call: {
+      callId: 'call-1',
+      caller: { id: 'u1', displayName: 'Alice' },
+      media: 'audio',
+      expiresAt: new Date(Date.now() + 60000).toISOString(),
+    },
+  });
+  assert.equal(outcome.status, 'success');
+  await updateRecord(h.scope.JackfieldDatabaseName, 'snapshots', 'call-1', current => ({ ...current, expiresAt: Date.now() - 1 }));
+
+  await dispatch(h.listeners, 'periodicsync', { tag: 'jackfield-deadline' });
+  await dispatch(h.listeners, 'periodicsync', { tag: 'jackfield-deadline' });
+
+  const snapshot = (await records(h.scope.JackfieldDatabaseName, 'snapshots'))[0];
+  const events = (await records(h.scope.JackfieldDatabaseName, 'inbox')).filter(item => item.event);
+  assert.equal(snapshot.state, 'ended');
+  assert.equal(events.length, 1);
+  assert.equal(events[0].event.reason, 'missed');
 });
 
 test('bridge refuses an unrelated worker registration', async () => {
@@ -651,7 +677,7 @@ test('browser opaque redirect is terminal while a network rejection remains retr
       return response;
     };
     await h.scope.JackfieldWorker.configure({ endpoint: 'https://callbacks.example.test/events', auth: { type: 'bearer', token: 'token' }, timeToLiveMs: 60000, maxPendingEvents: 10 });
-    await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+    await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio', expiresAt: new Date(Date.now() + 60000).toISOString() } });
     await dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
     assert.equal(mode, 'manual');
     assert.equal((await records(h.scope.JackfieldDatabaseName, 'outbox'))[0].state, state);
@@ -667,7 +693,7 @@ test('early Background Sync re-registers future work and records earliest due', 
   h.scope.registration.periodicSync = { register: async (tag, options) => periodic.push({ tag, options }) };
   h.scope.fetch = async () => ({ status: 503, headers: { get: name => name === 'Retry-After' ? '60' : null } });
   await h.scope.JackfieldWorker.configure({ endpoint: 'https://callbacks.example.test/events', auth: { type: 'bearer', token: 'token' }, timeToLiveMs: 600000, maxPendingEvents: 10 });
-  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio', expiresAt: new Date(Date.now() + 60000).toISOString() } });
   await dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
   const before = syncs.length;
   await dispatch(h.listeners, 'sync', { tag: 'jackfield-outbox' });
@@ -685,7 +711,7 @@ test('Periodic Background Sync drains due callbacks and ignores unrelated tags',
     return { status: calls === 1 ? 503 : 204, headers: { get: () => null } };
   };
   await h.scope.JackfieldWorker.configure({ endpoint: 'https://callbacks.example.test/events', auth: { type: 'bearer', token: 'token' }, timeToLiveMs: 60000, maxPendingEvents: 10 });
-  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio', expiresAt: new Date(Date.now() + 60000).toISOString() } });
   await dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
   const item = (await records(h.scope.JackfieldDatabaseName, 'outbox'))[0];
   await updateRecord(h.scope.JackfieldDatabaseName, 'outbox', item.id, current => ({ ...current, nextAt: 0 }));
@@ -712,7 +738,7 @@ test('live event goes only to current lease client after takeover', async () => 
   await h.scope.JackfieldWorker.command({ version: 1, command: 'claim', owner: 'a' }, 'client-a');
   await new Promise(resolve => setTimeout(resolve, 15));
   await h.scope.JackfieldWorker.command({ version: 1, command: 'claim', owner: 'b' }, 'client-b');
-  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio', expiresAt: new Date(Date.now() + 60000).toISOString() } });
   await dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
   assert.equal(first.length, 0);
   assert.equal(second.length, 1);
@@ -727,7 +753,7 @@ test('takeover during client lookup fences the former owner', async () => {
   await h.scope.JackfieldWorker.command({ version: 1, command: 'claim', owner: 'a' }, 'client-a');
   let release;
   h.scope.clients.matchAll = () => new Promise(resolve => { release = () => resolve(h.clients); });
-  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio', expiresAt: new Date(Date.now() + 60000).toISOString() } });
   const click = dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
   while (!release) await new Promise(resolve => setTimeout(resolve, 1));
   await new Promise(resolve => setTimeout(resolve, 15));
@@ -744,7 +770,7 @@ test('publish failure after durable commit leaves callback outbox recoverable', 
   await h.scope.JackfieldWorker.command({ version: 1, command: 'claim', owner: 'tab' }, 'client-a');
   h.scope.clients.matchAll = async () => { throw new Error('worker terminated while publishing'); };
   await h.scope.JackfieldWorker.configure({ endpoint: 'https://callbacks.example.test/events', auth: { type: 'bearer', token: 'token' }, timeToLiveMs: 60000, maxPendingEvents: 10 });
-  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio', expiresAt: new Date(Date.now() + 60000).toISOString() } });
   await assert.rejects(dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } }));
   assert.equal((await records(h.scope.JackfieldDatabaseName, 'inbox')).filter(item => item.event).length, 1);
   assert.equal((await records(h.scope.JackfieldDatabaseName, 'receipts')).filter(item => item.deadline).length, 1);
@@ -759,7 +785,7 @@ test('initialization re-arms persisted callback work after worker restart', asyn
   h.scope.fetch = async () => { throw new TypeError('offline'); };
   const callbacks = { endpoint: 'https://callbacks.example.test/events', auth: { type: 'bearer', token: 'token' }, timeToLiveMs: 60000, maxPendingEvents: 10 };
   await h.scope.JackfieldWorker.configure(callbacks);
-  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio' } });
+  await h.scope.JackfieldWorker.command({ version: 1, command: 'reportIncoming', call: { callId: 'call-1', caller: { id: 'u1', displayName: 'Alice' }, media: 'audio', expiresAt: new Date(Date.now() + 60000).toISOString() } });
   await dispatch(h.listeners, 'notificationclick', { action: 'answer', notification: { data: { callId: 'call-1' }, close() {} } });
   registered.length = 0;
   await h.scope.JackfieldWorker.command({ version: 1, command: 'initialize', callbacks });

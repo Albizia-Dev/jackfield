@@ -8,6 +8,7 @@ object JackfieldFirebaseMessage {
         val callerId: String,
         val callerName: String,
         val media: String,
+        val expiresAt: String,
     ) : Parsed
 
     data class End(val callId: String, val reason: String) : Parsed
@@ -21,10 +22,11 @@ object JackfieldFirebaseMessage {
                 val callerId = data["callerId"].orEmpty()
                 val callerName = data["callerName"].orEmpty()
                 val media = data["media"].orEmpty()
-                if (callerId.isBlank() || callerName.isBlank() || media !in setOf("audio", "video")) {
+                val expiresAt = data["expiresAt"].orEmpty()
+                if (callerId.isBlank() || callerName.isBlank() || media !in setOf("audio", "video") || expiresAt.isBlank()) {
                     null
                 } else {
-                    Incoming(callId, callerId, callerName, media)
+                    Incoming(callId, callerId, callerName, media, expiresAt)
                 }
             }
             "end" -> data["reason"]?.takeIf {

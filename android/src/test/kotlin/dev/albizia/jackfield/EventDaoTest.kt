@@ -87,7 +87,7 @@ class EventDaoTest {
             legacy.version = 1
         }
         val migrated = Room.databaseBuilder(context, JackfieldDatabase::class.java, path)
-            .addMigrations(JackfieldDatabase.MIGRATION_1_2).allowMainThreadQueries().build()
+            .addMigrations(JackfieldDatabase.MIGRATION_1_2, JackfieldDatabase.MIGRATION_2_3).allowMainThreadQueries().build()
         try {
             assertTrue(migrated.events().httpPaused())
             assertNull(migrated.events().state()?.rejectedAuthFingerprint)

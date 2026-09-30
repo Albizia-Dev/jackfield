@@ -117,6 +117,7 @@ final class CallController extends ChangeNotifier {
           callId: id,
           caller: Caller(id: party.trim(), displayName: party.trim()),
           media: CallMedia.audio,
+          expiresAt: DateTime.now().toUtc().add(const Duration(seconds: 45)),
         ),
       );
       _selectLiveCall(id, result);

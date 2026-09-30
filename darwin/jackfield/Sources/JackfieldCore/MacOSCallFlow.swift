@@ -6,9 +6,9 @@ public struct MacOSCallFlow: Sendable {
 
   public init(store: EventStore) { self.store = store }
 
-  public func reportIncoming(callId: String, callerId: String, callerName: String, media: String) async throws -> CallRecord {
+  public func reportIncoming(callId: String, callerId: String, callerName: String, media: String, expiresAt: Date? = nil) async throws -> CallRecord {
     if let existing = try await store.snapshot(callId: callId) { return existing }
-    let record = CallRecord(callId: callId, state: "ringing", media: media, callerId: callerId, callerName: callerName)
+    let record = CallRecord(callId: callId, state: "ringing", media: media, callerId: callerId, callerName: callerName, expiresAt: expiresAt)
     try await store.save(snapshot: record)
     return record
   }

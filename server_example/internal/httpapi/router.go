@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Albizia-Dev/jackfield/server_example/internal/callbacks"
 	"github.com/Albizia-Dev/jackfield/server_example/internal/calls"
@@ -106,7 +107,7 @@ func (r *router) create(w http.ResponseWriter, request *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	call := calls.Call{ID: input.CallID, Caller: input.Caller, Media: input.Media, DeviceToken: input.FCMToken, InitiatorToken: input.InitiatorFCMToken}
+	call := calls.Call{ID: input.CallID, Caller: input.Caller, Media: input.Media, ExpiresAt: time.Now().UTC().Add(45 * time.Second), DeviceToken: input.FCMToken, InitiatorToken: input.InitiatorFCMToken}
 	if !r.store.Put(call) {
 		w.WriteHeader(http.StatusConflict)
 		return

@@ -34,6 +34,7 @@ internal object Wire {
     fun string(value: Any?): String = (value as? String)?.takeIf { it.isNotBlank() } ?: fail()
     fun bool(value: Any?): Boolean = value as? Boolean ?: fail()
     fun number(value: Any?): Long = when (value) { is Int -> value.toLong(); is Long -> value; else -> fail() }
+    fun instant(value: Any?): Long = try { Instant.parse(string(value)).toEpochMilli() } catch (_: Exception) { fail() }
     fun media(value: Any?) = string(value).also { if (it !in setOf("audio", "video")) fail() }
     fun reason(value: Any?) = string(value).also { if (it !in setOf("local", "remote", "rejected", "missed", "failed")) fail() }
     fun caller(value: Any?): Map<String, String> {

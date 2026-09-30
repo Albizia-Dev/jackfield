@@ -27,7 +27,7 @@ class JackfieldPushReceiver : BroadcastReceiver() {
                 val tombstones = PushTombstones(context)
                 when (intent.action) {
                     ACTION_INCOMING -> {
-                        val data = Wire.request(payload, setOf("callId", "caller", "media"))
+                        val data = Wire.request(payload, setOf("callId", "caller", "media", "expiresAt"))
                         val callId = Wire.string(data["callId"])
                         if (tombstones.contains(callId)) {
                             JackfieldLog.info("push.incoming_suppressed", callId, "reason=terminal_tombstone")

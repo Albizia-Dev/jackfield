@@ -1,6 +1,9 @@
 package calls
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 type Party struct {
 	ID          string `json:"id"`
@@ -18,12 +21,13 @@ const (
 )
 
 type Call struct {
-	ID             string `json:"callId"`
-	Caller         Party  `json:"caller"`
-	Media          string `json:"media"`
-	State          State  `json:"state"`
-	DeviceToken    string `json:"-"`
-	InitiatorToken string `json:"-"`
+	ID             string    `json:"callId"`
+	Caller         Party     `json:"caller"`
+	Media          string    `json:"media"`
+	ExpiresAt      time.Time `json:"expiresAt"`
+	State          State     `json:"state"`
+	DeviceToken    string    `json:"-"`
+	InitiatorToken string    `json:"-"`
 }
 
 type Event struct {

@@ -9,21 +9,25 @@ pubspec и не поддерживаются в 0.0.2. Статус адапте
 и более поздний macOS build/run в checkout с правильным именем. Команды и смысл
 workflow приведены в [CI](ci.md), условия выпуска — в
 [checklist](release-checklist.md).
-На релизных правках поверх `ce1d0f9` локальный Flutter suite прошёл 75/75,
-analyzer и форматирование прошли; платформенные строки ниже сохраняют границы
-ранее выполненного aggregate и отдельного macOS прогона.
+На текущей ветке локальный Flutter suite прошёл 79/79, worker suite 44/44,
+Swift core 58/58, Android unit suite и Go test/vet прошли; iOS device-target
+Xcode build и macOS example debug build завершились успешно. Это остаётся
+кодовой/сборочной проверкой и не заменяет provider/device proof.
 
 Функциональные пробелы исходного контракта также открыты: Web outgoing,
 mute/hold и полная provider/device матрица. iOS системный decline теперь
 классифицируется как `rejected` по durable ringing snapshot и покрыт Swift unit
 test, но реальный PushKit/CallKit reject relay на двух устройствах ещё не доказан.
+Обязательный `expiresAt` и восстановление `missed` после restart покрыты
+Android, Swift storage и Web worker tests; точность фонового wake остаётся
+ограничением каждой ОС.
 
 | Платформа | Адаптер | Автоматические проверки | Ручные OS/device/provider проверки |
 | --- | --- | --- | --- |
 | Android | Реализован | Kotlin/Robolectric unit, native callback fixture и debug APK прошли; remote CI not run | 2026-09-30: реальный FCM из test backend разбудил background process, поднял phone-call FGS, wake lock и full-screen поверх locked screen; ringtone playback подтверждён системным audio state. Не подтверждены DND, force-stop и широкая OEM-матрица |
 | iOS | Реализован | Swift tests и pod lint прошли; подписанная device-сборка прошла; remote CI not run | Incoming/outgoing/end прошли на iPad с iOS 17.3.1; не подтверждены APNs/PushKit, lock screen и завершённый процесс |
-| Web | Реализован | Свежий aggregate: worker 27/27, JS/Wasm release builds и smoke прошли; remote CI not run | Не подтверждены Web Push, закрытая вкладка, browser scheduling и notification interaction |
-| macOS | Реализован и зарегистрирован | Swift 36/36 и pod lint прошли в aggregate; macOS example build/run позднее прошёл в detached checkout с basename `jackfield`; remote CI не подтверждён | Не подтверждены реальные notification actions, фоновая доставка и provider сценарии |
+| Web | Реализован | Worker 44/44, включая идемпотентный `missed`; прежние JS/Wasm release builds и smoke прошли; remote CI not run | Не подтверждены Web Push, закрытая вкладка, browser scheduling и notification interaction |
+| macOS | Реализован и зарегистрирован | Swift core 58/58; macOS example debug build прошёл после локального обхода basename worktree; remote CI не подтверждён | Не подтверждены реальные notification actions, фоновая доставка и provider сценарии |
 | Windows | Не реализован и не зарегистрирован: Task 11 отложен | `windows-scaffold` проверил только исходный scaffold/contract; remote CI не подтверждён | Native call behavior и OS UI не проверены; платформа не поддерживается в 0.0.2 |
 | Linux | Не реализован и не зарегистрирован: Task 12 отложен | `linux-scaffold` проверил только исходный scaffold/contract; remote CI не подтверждён | Native call behavior и OS UI не проверены; платформа не поддерживается в 0.0.2 |
 

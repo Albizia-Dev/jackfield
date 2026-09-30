@@ -8,12 +8,16 @@ import (
 )
 
 func TestInviteUsesDataMessageWithTTL(t *testing.T) {
-	message := BuildInvite("device-token", calls.Call{ID: "call-1", Caller: calls.Party{ID: "person-1", DisplayName: "Alice"}, Media: "audio"}, 90*time.Second)
+	expiresAt := time.Date(2026, 9, 30, 4, 0, 45, 0, time.UTC)
+	message := BuildInvite("device-token", calls.Call{ID: "call-1", Caller: calls.Party{ID: "person-1", DisplayName: "Alice"}, Media: "audio", ExpiresAt: expiresAt}, 90*time.Second)
 	if message.Token != "device-token" || message.Data["version"] != "1" || message.Data["callId"] != "call-1" || message.Data["callerId"] != "person-1" || message.Data["callerName"] != "Alice" || message.Data["media"] != "audio" {
 		t.Fatalf("unexpected FCM data: %#v", message)
 	}
 	if message.Android == nil || message.Android.TTL == nil || *message.Android.TTL != 90*time.Second || message.Android.CollapseKey != "call-1" || message.Notification != nil {
 		t.Fatalf("invite must be a data-only message with positive TTL: %#v", message)
+	}
+	if message.Data["expiresAt"] != "2026-09-30T04:00:45.000Z" {
+		t.Fatalf("missing stable ring deadline: %#v", message.Data)
 	}
 }
 

@@ -29,6 +29,7 @@ final class IncomingCall {
     required this.callId,
     required this.caller,
     required this.media,
+    required this.expiresAt,
   });
 
   /// The call attempt identifier.
@@ -39,6 +40,12 @@ final class IncomingCall {
 
   /// The requested media kind.
   final CallMedia media;
+
+  /// The last instant at which this invitation may still be ringing.
+  ///
+  /// Every adapter persists this value and ends an unanswered call with
+  /// [EndReason.missed] when it next gets execution at or after the deadline.
+  final DateTime expiresAt;
 }
 
 /// A request to start an outgoing call.
@@ -127,6 +134,7 @@ final class CallSnapshot {
     this.caller,
     this.actionId,
     this.actionDeadline,
+    this.expiresAt,
     Iterable<CallActionReceipt> actionReceipts = const [],
   }) : actionReceipts = List<CallActionReceipt>.unmodifiable(actionReceipts);
 
@@ -147,6 +155,9 @@ final class CallSnapshot {
 
   /// The deadline associated with [actionId], when one exists.
   final DateTime? actionDeadline;
+
+  /// The ringing deadline for an incoming call, when one exists.
+  final DateTime? expiresAt;
 
   /// Persisted outcomes needed to recognize completed action replays.
   final List<CallActionReceipt> actionReceipts;

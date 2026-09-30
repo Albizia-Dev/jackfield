@@ -27,6 +27,7 @@ if (capabilities.features.contains(JackfieldFeature.incoming)) {
       callId: const CallId('server-call-attempt-42'),
       caller: const Caller(id: 'peer-7', displayName: 'Alex'),
       media: CallMedia.audio,
+      expiresAt: DateTime.now().toUtc().add(const Duration(seconds: 45)),
     ),
   );
   if (outcome case JackfieldFailure<CallSnapshot>(:final error)) {
@@ -50,6 +51,11 @@ if (capabilities.features.contains(JackfieldFeature.outgoing)) {
   }
 }
 ```
+
+`IncomingCall.expiresAt` is mandatory and applies only to the ringing phase.
+Adapters persist it and eventually emit one `ended(reason: missed)` event if no
+answer or explicit end wins first. Keep it no more than five minutes ahead;
+provider and operating-system background wake times remain best effort.
 
 Call `requestPermissions()` from a user action; Android requests microphone,
 notifications, Bluetooth routing and full-screen incoming-call access without

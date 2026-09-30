@@ -24,6 +24,7 @@ final class MacOSCallController: NSObject, UNUserNotificationCenterDelegate {
   private let reportFailure: (String) -> Void
   private var previousDelegate: UNUserNotificationCenterDelegate?
   private var deadlines: [String: Task<Void, Never>] = [:]
+  private var ringDeadlines: [String: Task<Void, Never>] = [:]
 
   init(store: EventStore, publish: @escaping (WireEnvelope) -> Void, reportFailure: @escaping (String) -> Void) {
     self.store = store
@@ -62,10 +63,12 @@ final class MacOSCallController: NSObject, UNUserNotificationCenterDelegate {
     guard status == .authorized || status == .provisional else { throw MacOSCallError.permissionDenied }
   }
 
-  func reportIncoming(callId: String, callerId: String, callerName: String, media: String) async throws -> CallRecord {
+  func reportIncoming(callId: String, callerId: String, callerName: String, media: String, expiresAt: Date) async throws -> CallRecord {
     try await requirePermission()
+    guard expiresAt > Date() else { throw JackfieldCoreError.deadlineExceeded }
+    guard expiresAt.timeIntervalSinceNow <= 300 else { throw JackfieldCoreError.protocolFailure }
     await ensureCategories()
-    let record = try await flow.reportIncoming(callId: callId, callerId: callerId, callerName: callerName, media: media)
+    let record = try await flow.reportIncoming(callId: callId, callerId: callerId, callerName: callerName, media: media, expiresAt: expiresAt)
     guard record.state == "ringing" else { return record }
     do { try await present(record) }
     catch {
@@ -73,6 +76,7 @@ final class MacOSCallController: NSObject, UNUserNotificationCenterDelegate {
       if let event = ended.event { publish(event) }
       throw error
     }
+    scheduleRingDeadline(callId, at: record.expiresAt ?? expiresAt)
     return record
   }
 
@@ -98,6 +102,7 @@ final class MacOSCallController: NSObject, UNUserNotificationCenterDelegate {
 
   func end(callId: String, reason: String) async throws -> CallRecord {
     let outcome = try await flow.end(callId: callId, reason: reason)
+    ringDeadlines.removeValue(forKey: callId)?.cancel()
     removeNotification(callId)
     if let actionId = outcome.record.actionId { deadlines.removeValue(forKey: actionId)?.cancel() }
     if let event = outcome.event { publish(event) }
@@ -151,6 +156,25 @@ final class MacOSCallController: NSObject, UNUserNotificationCenterDelegate {
          !record.actionReceipts.contains(where: { $0.actionId == actionId }) {
         scheduleDeadline(actionId, at: deadline)
       }
+    }
+    for record in records where record.state == "ringing" {
+      guard let expiresAt = record.expiresAt else { continue }
+      if expiresAt <= Date() {
+        do { _ = try await end(callId: record.callId, reason: "missed") }
+        catch { reportFailure("platformFailure") }
+      } else { scheduleRingDeadline(record.callId, at: expiresAt) }
+    }
+  }
+
+  private func scheduleRingDeadline(_ callId: String, at deadline: Date) {
+    ringDeadlines.removeValue(forKey: callId)?.cancel()
+    ringDeadlines[callId] = Task { [weak self] in
+      let seconds = max(0, deadline.timeIntervalSinceNow + 0.001)
+      try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+      guard !Task.isCancelled, let self,
+            let record = try? await self.store.snapshot(callId: callId), record.state == "ringing" else { return }
+      do { _ = try await self.end(callId: callId, reason: "missed") }
+      catch { self.reportFailure("platformFailure") }
     }
   }
 

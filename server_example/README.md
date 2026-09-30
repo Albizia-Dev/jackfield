@@ -18,10 +18,10 @@ go run ./cmd/server
 Host Android-приложения должен зарегистрировать свой `FirebaseMessagingService`, передать FCM token вашему backend и преобразовать data message в wire v1 для `JackfieldPushReceiver.reportIncomingCall(context, payload)`. Jackfield не содержит FCM SDK и не читает push автоматически. Payload для входящего вызова:
 
 ```json
-{"version":1,"callId":"call-1","caller":{"id":"person-1","displayName":"Alice"},"media":"audio"}
+{"version":1,"callId":"call-1","caller":{"id":"person-1","displayName":"Alice"},"media":"audio","expiresAt":"2026-09-30T04:00:45.000Z"}
 ```
 
-Сервис получает поля `version`, `type`, `callId`, `callerId`, `callerName`, `media`; он проверяет `version == "1"`, `type == "incoming"` и вызывает native entrypoint с объектом выше. Для `type == "end"` и `reason == "remote"` он вызывает native end entrypoint с `{"version":1,"callId":"call-1","reason":"remote"}`. Доставка push и допуск к системному UI зависят от ОС, конфигурации FCM и реального устройства.
+Сервис получает поля `version`, `type`, `callId`, `callerId`, `callerName`, `media`, `expiresAt`; он проверяет `version == "1"`, `type == "incoming"` и вызывает native entrypoint с объектом выше. Стенд задаёт deadline на 45 секунд от принятия `POST /calls`. Для `type == "end"` и `reason == "remote"` он вызывает native end entrypoint с `{"version":1,"callId":"call-1","reason":"remote"}`. Доставка push и допуск к системному UI зависят от ОС, конфигурации FCM и реального устройства.
 
 Тестовый Android example автоматически регистрирует актуальный токен через `PUT /devices/test` с тем же `JACKFIELD_API_TOKEN`. После регистрации `POST /calls` может не содержать `fcmToken`: сервер использует последний зарегистрированный токен из памяти. Явно переданный `fcmToken` по-прежнему имеет приоритет. После перезапуска сервера устройство должно открыть приложение и зарегистрироваться повторно.
 
