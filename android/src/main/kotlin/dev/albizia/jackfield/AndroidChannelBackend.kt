@@ -46,6 +46,6 @@ internal class AndroidChannelBackend(private val controller: CallController) {
     }
     companion object {
         val queries = setOf("capabilities", "diagnostics")
-        val methods = queries + setOf("initialize", "pushTokens", "reportIncomingCall", "startOutgoingCall", "updateCall", "endCall", "completeAction", "acknowledgeEvents")
+        val methods = queries + setOf("initialize", "requestPermissions", "pushTokens", "reportIncomingCall", "startOutgoingCall", "updateCall", "endCall", "completeAction", "acknowledgeEvents")
     }
 }

@@ -67,6 +67,43 @@ void main() {
   });
 
   test(
+    'permission request is selected in Dart and decoded as typed state',
+    () async {
+      response = {
+        'version': 1,
+        'status': 'success',
+        'value': {
+          'states': {
+            'microphone': 'granted',
+            'notifications': 'denied',
+            'fullScreenIntent': 'granted',
+          },
+          'openedSettings': true,
+        },
+      };
+      final result = await api.requestPermissions(
+        const JackfieldPermissionRequest(bluetooth: false),
+      );
+      final report =
+          (result as JackfieldSuccess<JackfieldPermissionReport>).value;
+      expect(
+        report.states[JackfieldPermission.microphone],
+        JackfieldPermissionState.granted,
+      );
+      expect(
+        report.states[JackfieldPermission.notifications],
+        JackfieldPermissionState.denied,
+      );
+      expect(report.openedSettings, isTrue);
+      expect(calls.single.method, 'requestPermissions');
+      expect(calls.single.arguments, {
+        'version': 1,
+        'permissions': ['microphone', 'notifications', 'fullScreenIntent'],
+      });
+    },
+  );
+
+  test(
     'configuration encodes optional callbacks with opaque credentials',
     () async {
       await api.initialize(

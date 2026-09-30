@@ -58,6 +58,14 @@ abstract class Jackfield {
   /// Reads permission and queue health without exposing tokens or credentials.
   Future<JackfieldDiagnostics> diagnostics();
 
+  /// Requests call permissions and waits until the platform flow completes.
+  ///
+  /// The default request covers audio calls, notifications, Bluetooth routing,
+  /// and Android lock-screen full-screen presentation without host native code.
+  Future<JackfieldResult<JackfieldPermissionReport>> requestPermissions([
+    JackfieldPermissionRequest request = const JackfieldPermissionRequest(),
+  ]);
+
   /// Returns all currently known provider tokens without requesting permission.
   Future<JackfieldResult<PushTokenSnapshot>> pushTokens();
 
@@ -113,6 +121,11 @@ final class _Jackfield implements Jackfield {
 
   @override
   Future<JackfieldDiagnostics> diagnostics() => _platform.diagnostics();
+
+  @override
+  Future<JackfieldResult<JackfieldPermissionReport>> requestPermissions([
+    JackfieldPermissionRequest request = const JackfieldPermissionRequest(),
+  ]) => _platform.requestPermissions(request);
 
   @override
   Future<JackfieldResult<PushTokenSnapshot>> pushTokens() =>

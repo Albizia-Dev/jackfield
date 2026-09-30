@@ -485,6 +485,12 @@ final class RecordingJackfield implements Jackfield {
   );
 
   @override
+  Future<JackfieldResult<JackfieldPermissionReport>> requestPermissions([
+    JackfieldPermissionRequest request = const JackfieldPermissionRequest(),
+  ]) async =>
+      const JackfieldFailure(JackfieldError(JackfieldErrorCode.unsupported));
+
+  @override
   Future<JackfieldResult<CallSnapshot>> endCall(
     CallId id,
     EndReason reason,

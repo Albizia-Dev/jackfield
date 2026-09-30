@@ -27,6 +27,19 @@ abstract final class WireCodec {
   /// Encodes a versioned query or stream attachment with no application data.
   static Map<String, Object?> encodeQuery() => {'version': version};
 
+  /// Encodes the selected platform permissions using stable wire names.
+  static Map<String, Object?> encodePermissionRequest(
+    JackfieldPermissionRequest request,
+  ) => {
+    'version': version,
+    'permissions': [
+      if (request.microphone) JackfieldPermission.microphone.name,
+      if (request.notifications) JackfieldPermission.notifications.name,
+      if (request.bluetooth) JackfieldPermission.bluetooth.name,
+      if (request.fullScreenIntent) JackfieldPermission.fullScreenIntent.name,
+    ],
+  };
+
   /// Encodes initialization, rejecting unsafe callback destinations and bounds.
   static Map<String, Object?> encodeConfiguration(
     JackfieldConfiguration config,
@@ -120,6 +133,23 @@ abstract final class WireCodec {
   ) => _decodeResult(payload, (value) {
     final data = _object(value, {'tokens'});
     return PushTokenSnapshot(_list(data['tokens']).map(_decodeToken));
+  });
+
+  /// Decodes the final observed states from an interactive permission flow.
+  static JackfieldResult<JackfieldPermissionReport> decodePermissionResult(
+    Object? payload,
+  ) => _decodeResult(payload, (value) {
+    final data = _object(value, {'states', 'openedSettings'});
+    final states = _stringMap(data['states']);
+    return JackfieldPermissionReport(
+      states: states.map(
+        (name, state) => MapEntry(
+          _enum(name, JackfieldPermission.values),
+          _enum(state, JackfieldPermissionState.values),
+        ),
+      ),
+      openedSettings: _bool(data['openedSettings']),
+    );
   });
 
   /// Decodes an explicit capability report, rejecting unknown feature names.

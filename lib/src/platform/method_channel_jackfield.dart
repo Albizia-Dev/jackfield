@@ -143,6 +143,16 @@ class MethodChannelJackfield extends JackfieldPlatform {
     }
   }
 
+  /// Runs the platform permission flow and decodes its final observed states.
+  @override
+  Future<JackfieldResult<JackfieldPermissionReport>> requestPermissions(
+    JackfieldPermissionRequest request,
+  ) => _invoke(
+    'requestPermissions',
+    () => WireCodec.encodePermissionRequest(request),
+    WireCodec.decodePermissionResult,
+  );
+
   /// Publishes validated call events from the native event channel.
   @override
   Stream<JackfieldEvent> get events => _events;

@@ -88,6 +88,12 @@ abstract class JackfieldPlatform extends PlatformInterface {
     lastError: const JackfieldError(JackfieldErrorCode.unsupported),
   );
 
+  /// Requests call permissions without requiring host-platform glue code.
+  Future<JackfieldResult<JackfieldPermissionReport>> requestPermissions(
+    JackfieldPermissionRequest request,
+  ) async =>
+      const JackfieldFailure(JackfieldError(JackfieldErrorCode.unsupported));
+
   /// Returns all currently known provider tokens without requesting permission.
   Future<JackfieldResult<PushTokenSnapshot>> pushTokens() async =>
       const JackfieldFailure(JackfieldError(JackfieldErrorCode.unsupported));

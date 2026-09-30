@@ -34,10 +34,14 @@ internal class JackfieldRuntime private constructor(context: Context) {
         catch (error: Exception) { controller.recordError(error) }
         scope.launch { try { recover() } catch (error: Exception) { controller.recordError(error) } }
     }
-    suspend fun answer(callId: String): dev.albizia.jackfield.store.CallEntity {
+    suspend fun answer(callId: String, timeoutMs: Long = 4500): dev.albizia.jackfield.store.CallEntity {
         val current = controller.snapshot(callId)
         if (current?.state == "connecting" && current.actionId != null) return current
-        val snapshot = controller.requestAnswer(callId, UUID.randomUUID().toString())
+        val snapshot = controller.requestAnswer(
+            callId,
+            UUID.randomUUID().toString(),
+            System.currentTimeMillis() + timeoutMs,
+        )
         scope.launch {
             delay(((snapshot.actionDeadline ?: 0) - System.currentTimeMillis() + 1).coerceAtLeast(1))
             try { controller.expireActions() } catch (error: Exception) { controller.recordError(error) }

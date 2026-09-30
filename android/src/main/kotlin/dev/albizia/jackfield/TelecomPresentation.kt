@@ -37,7 +37,11 @@ internal class TelecomPresentation(
         notifications.permitted() -> "systemNotification"
         else -> "unavailable"
     }
-    override fun permissions() = mapOf("manageOwnCalls" to if (ownCallsPermission()) "granted" else "denied", "notifications" to if (notifications.permitted()) "granted" else "denied")
+    override fun permissions() = mapOf(
+        "manageOwnCalls" to if (ownCallsPermission()) "granted" else "denied",
+        "notifications" to if (notifications.permitted()) "granted" else "denied",
+        "fullScreenIntent" to if (notifications.fullScreenPermitted()) "granted" else "denied",
+    )
 
     override suspend fun show(call: CallEntity, incoming: Boolean) {
         val telecom = manager
@@ -93,6 +97,7 @@ internal class TelecomPresentation(
             val result = control.answer(if (call.media == "video") CallAttributesCompat.CALL_TYPE_VIDEO_CALL else CallAttributesCompat.CALL_TYPE_AUDIO_CALL)
             if (result !is CallControlResult.Success) throw JackfieldFailure("temporarilyUnavailable")
         }
+        notifications.activate(call.callId)
     }
     override suspend fun end(callId: String) {
         notifications.end(callId)

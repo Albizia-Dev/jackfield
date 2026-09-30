@@ -1,6 +1,7 @@
 import Flutter
 import Foundation
 import UIKit
+import AVFoundation
 
 #if canImport(JackfieldCore)
 import JackfieldCore
@@ -69,6 +70,8 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
           result(self.capabilities())
         case "diagnostics":
           result(try await self.diagnostics(store))
+        case "requestPermissions":
+          result(Self.success(try await self.requestPermissions(data)))
         case "reportIncomingCall":
           let (id, person, media) = try Self.callData(data, person: "caller")
           guard let controller = self.controller else { throw JackfieldCoreError.platformFailure }
@@ -126,6 +129,35 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
     } else {
       try await Self.backgroundRuntime.disableCallbacks()
     }
+  }
+
+  private func requestPermissions(_ data: [String: Any]) async throws -> [String: Any] {
+    guard let values = data["permissions"] as? [String], Set(values).count == values.count,
+          values.allSatisfy({ ["microphone", "notifications", "bluetooth", "fullScreenIntent"].contains($0) })
+    else { throw JackfieldCoreError.protocolFailure }
+
+    if values.contains("microphone"), AVAudioSession.sharedInstance().recordPermission == .undetermined,
+       Bundle.main.object(forInfoDictionaryKey: "NSMicrophoneUsageDescription") != nil {
+      await withCheckedContinuation { continuation in
+        AVAudioSession.sharedInstance().requestRecordPermission { _ in continuation.resume() }
+      }
+    }
+
+    var states: [String: String] = [:]
+    for permission in values {
+      switch permission {
+      case "microphone":
+        switch AVAudioSession.sharedInstance().recordPermission {
+        case .granted: states[permission] = "granted"
+        case .denied: states[permission] = "denied"
+        case .undetermined: states[permission] = "notDetermined"
+        @unknown default: states[permission] = "unknown"
+        }
+      case "bluetooth": states[permission] = "granted"
+      default: states[permission] = "unknown"
+      }
+    }
+    return ["states": states, "openedSettings": false]
   }
 
   private func startPushRegistry() {

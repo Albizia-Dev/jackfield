@@ -19,6 +19,61 @@ enum JackfieldPermissionState {
   restricted,
 }
 
+/// A permission Jackfield can inspect or request for call presentation.
+enum JackfieldPermission {
+  /// Capturing the local participant's voice.
+  microphone,
+
+  /// Posting incoming-call and foreground-service notifications.
+  notifications,
+
+  /// Connecting to nearby Bluetooth call-audio devices.
+  bluetooth,
+
+  /// Presenting an incoming call above the Android lock screen.
+  fullScreenIntent,
+}
+
+/// Selects the call permissions to request from the current platform.
+final class JackfieldPermissionRequest {
+  /// Creates a request for the permissions needed by a normal audio call.
+  ///
+  /// Platforms ignore inapplicable permissions and report them as [JackfieldPermissionState.unknown].
+  const JackfieldPermissionRequest({
+    this.microphone = true,
+    this.notifications = true,
+    this.bluetooth = true,
+    this.fullScreenIntent = true,
+  });
+
+  /// Whether microphone access should be requested.
+  final bool microphone;
+
+  /// Whether notification access should be requested.
+  final bool notifications;
+
+  /// Whether Bluetooth call-audio access should be requested.
+  final bool bluetooth;
+
+  /// Whether lock-screen full-screen presentation should be requested.
+  final bool fullScreenIntent;
+}
+
+/// The observed result after a platform permission request completes.
+final class JackfieldPermissionReport {
+  /// Creates an immutable permission report.
+  JackfieldPermissionReport({
+    required Map<JackfieldPermission, JackfieldPermissionState> states,
+    required this.openedSettings,
+  }) : states = Map.unmodifiable(states);
+
+  /// State of every permission included in the request.
+  final Map<JackfieldPermission, JackfieldPermissionState> states;
+
+  /// Whether the platform had to open a system settings page.
+  final bool openedSettings;
+}
+
 /// A read-only snapshot of adapter health, excluding credentials and tokens.
 final class JackfieldDiagnostics {
   /// Creates diagnostics; null queue counts mean the counts are unavailable.

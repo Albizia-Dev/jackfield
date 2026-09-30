@@ -54,7 +54,14 @@ class JackfieldActionReceiver : BroadcastReceiver() {
             try {
                 val id = Wire.string(intent.getStringExtra("callId"))
                 when (intent.action) {
-                    "answer" -> runtime.answer(id)
+                    "answer" -> {
+                        runtime.answer(id, 30_000)
+                        context.packageManager.getLaunchIntentForPackage(context.packageName)?.let { launch ->
+                            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                            launch.putExtra("jackfieldCallId", id)
+                            context.startActivity(launch)
+                        }
+                    }
                     "reject" -> runtime.controller.endCall(id, "rejected")
                     "end" -> runtime.controller.endCall(id, "local")
                     else -> Wire.fail()
