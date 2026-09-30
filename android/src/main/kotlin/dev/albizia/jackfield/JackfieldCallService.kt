@@ -40,16 +40,23 @@ internal class JackfieldCallService : Service() {
         JackfieldLog.info("service.command", callId, "action=${intent.action}")
         when (intent.action) {
             ACTION_SHOW -> {
+                val firstPresentation = !active.containsKey(callId)
+                val callerName = intent.getStringExtra(EXTRA_CALLER_NAME).orEmpty()
+                val state = intent.getStringExtra(EXTRA_STATE).orEmpty()
                 val notification = CallNotifications.build(
                     this,
                     callId,
-                    intent.getStringExtra(EXTRA_CALLER_NAME).orEmpty(),
-                    intent.getStringExtra(EXTRA_STATE).orEmpty(),
+                    callerName,
+                    state,
                 )
                 active[callId] = notification
                 promote(callId, notification)
-                if (intent.getStringExtra(EXTRA_STATE) == "ringing") startRinging(callId)
-                else stopRinging(callId)
+                if (state == "ringing") {
+                    startRinging(callId)
+                    if (firstPresentation) CallNotifications(this).launchFullScreen(callId, callerName)
+                } else {
+                    stopRinging(callId)
+                }
             }
             ACTION_ACTIVATE -> {
                 stopRinging(callId)

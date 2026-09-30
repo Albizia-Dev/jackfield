@@ -3,6 +3,7 @@ package dev.albizia.jackfield
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.ActivityOptions
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -38,6 +39,27 @@ internal class CallNotifications(private val context: Context) {
         JackfieldIncomingCallActivity.finishCall(callId)
         manager.cancel(notificationId(callId))
         try { context.startService(JackfieldCallService.endIntent(context, callId)) } catch (_: IllegalStateException) { /* Nothing remains to stop. */ }
+    }
+
+    fun launchFullScreen(callId: String, callerName: String) {
+        if (!fullScreenPermitted()) {
+            JackfieldLog.warn("fullscreen.not_permitted", callId)
+            return
+        }
+        try {
+            val options = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                ActivityOptions.makeBasic().apply {
+                    pendingIntentBackgroundActivityStartMode =
+                        ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED
+                }.toBundle()
+            } else {
+                null
+            }
+            fullScreen(context, callId, callerName).send(context, 0, null, null, null, null, options)
+            JackfieldLog.info("fullscreen.dispatched", callId)
+        } catch (error: Exception) {
+            JackfieldLog.error("fullscreen.dispatch_failed", callId, error)
+        }
     }
     companion object {
         const val CHANNEL = "jackfield.calls.v3"
