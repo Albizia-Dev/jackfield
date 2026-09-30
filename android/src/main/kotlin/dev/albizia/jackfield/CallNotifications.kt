@@ -35,6 +35,7 @@ internal class CallNotifications(private val context: Context) {
         ContextCompat.startForegroundService(context, JackfieldCallService.activateIntent(context, callId))
     }
     fun end(callId: String) {
+        JackfieldIncomingCallActivity.finishCall(callId)
         manager.cancel(notificationId(callId))
         try { context.startService(JackfieldCallService.endIntent(context, callId)) } catch (_: IllegalStateException) { /* Nothing remains to stop. */ }
     }

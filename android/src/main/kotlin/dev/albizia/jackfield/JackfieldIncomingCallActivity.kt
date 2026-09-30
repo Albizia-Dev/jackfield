@@ -11,6 +11,7 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import java.lang.ref.WeakReference
 
 /** Minimal native incoming-call surface that works before Flutter is running. */
 class JackfieldIncomingCallActivity : Activity() {
@@ -38,6 +39,18 @@ class JackfieldIncomingCallActivity : Activity() {
         setIntent(intent)
         JackfieldLog.info("fullscreen.new_intent", intent.getStringExtra(EXTRA_CALL_ID))
         bind(intent)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        synchronized(ACTIVE_LOCK) { active = WeakReference(this) }
+    }
+
+    override fun onDestroy() {
+        synchronized(ACTIVE_LOCK) {
+            if (active?.get() === this) active = null
+        }
+        super.onDestroy()
     }
 
     private fun bind(intent: Intent) {
@@ -73,8 +86,8 @@ class JackfieldIncomingCallActivity : Activity() {
                     LinearLayout(context).apply {
                         orientation = LinearLayout.HORIZONTAL
                         gravity = Gravity.CENTER
-                        addView(actionButton("Decline", Color.rgb(180, 35, 45)) { perform("reject", false) })
-                        addView(actionButton("Answer", Color.rgb(35, 145, 75)) { perform("answer", true) })
+                        addView(actionButton("Decline", Color.rgb(180, 35, 45)) { perform("reject") })
+                        addView(actionButton("Answer", Color.rgb(35, 145, 75)) { perform("answer") })
                     },
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -95,27 +108,31 @@ class JackfieldIncomingCallActivity : Activity() {
         }
     }
 
-    private fun perform(action: String, openApplication: Boolean) {
+    private fun perform(action: String) {
         JackfieldLog.info("fullscreen.action", callId, "action=$action")
         sendBroadcast(Intent(this, dev.albizia.jackfield.push.JackfieldActionReceiver::class.java).apply {
             this.action = action
             putExtra(EXTRA_CALL_ID, callId)
         })
-        if (openApplication) launchHostApplication()
         finishAndRemoveTask()
-    }
-
-    private fun launchHostApplication() {
-        packageManager.getLaunchIntentForPackage(packageName)?.let {
-            it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            it.putExtra(EXTRA_CALL_ID, callId)
-            startActivity(it)
-        }
     }
 
     companion object {
         const val EXTRA_CALL_ID = "callId"
         const val EXTRA_CALLER_NAME = "callerName"
+        private val ACTIVE_LOCK = Any()
+        private var active: WeakReference<JackfieldIncomingCallActivity>? = null
+
+        internal fun finishCall(callId: String) {
+            val activity = synchronized(ACTIVE_LOCK) { active?.get() } ?: return
+            if (activity.callId != callId || activity.isFinishing || activity.isDestroyed) return
+            activity.runOnUiThread {
+                if (activity.callId == callId && !activity.isFinishing && !activity.isDestroyed) {
+                    JackfieldLog.info("fullscreen.remote_finish", callId)
+                    activity.finishAndRemoveTask()
+                }
+            }
+        }
     }
 
     private val keyguardManager

@@ -37,7 +37,7 @@ func BuildInvite(token string, call calls.Call, ttl time.Duration) *messaging.Me
 			"version": "1", "type": "incoming", "callId": call.ID,
 			"callerId": call.Caller.ID, "callerName": call.Caller.DisplayName, "media": call.Media,
 		},
-		Android: &messaging.AndroidConfig{TTL: &ttl, Priority: "high"},
+		Android: &messaging.AndroidConfig{TTL: &ttl, Priority: "high", CollapseKey: call.ID},
 	}
 }
 
@@ -45,7 +45,7 @@ func BuildEnd(token string, call calls.Call, reason string, ttl time.Duration) *
 	return &messaging.Message{
 		Token:   token,
 		Data:    map[string]string{"version": "1", "type": "end", "callId": call.ID, "reason": reason},
-		Android: &messaging.AndroidConfig{TTL: &ttl, Priority: "high"},
+		Android: &messaging.AndroidConfig{TTL: &ttl, Priority: "high", CollapseKey: call.ID},
 	}
 }
 

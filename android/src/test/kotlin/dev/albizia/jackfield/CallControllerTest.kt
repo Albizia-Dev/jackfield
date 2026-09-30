@@ -72,6 +72,28 @@ class CallControllerTest {
         assertEquals(listOf("outgoing-1"), activated)
     }
 
+    @Test fun `presentation failure is durable and reaches both delivery paths`() = runTest {
+        controller.initialize(callbacks)
+        val events = mutableListOf<Map<String, Any?>>()
+        val failing = CallController(db, object : CallPresentation {
+            override val mechanism = "nativeCallUi"
+            override fun permissions() = mapOf("notifications" to "granted")
+            override suspend fun show(call: CallEntity, incoming: Boolean) { throw IllegalStateException("oem failure") }
+            override suspend fun update(call: CallEntity) {}
+            override suspend fun activate(call: CallEntity) {}
+            override suspend fun end(callId: String) {}
+        }, configuration, { _, _ -> }, { now }, { "failed-event" })
+        failing.eventListener = events::add
+
+        assertFailsWith<IllegalStateException> { failing.reportIncoming(incoming) }
+
+        assertEquals("failed", db.events().call("call-1")!!.state)
+        assertEquals("failed", events.single()["reason"])
+        assertEquals("ended", events.single()["type"])
+        assertEquals("failed-event", db.events().pendingFlutter().single().eventId)
+        assertEquals("failed-event", db.events().pendingHttp().single().eventId)
+    }
+
     @Test fun `HTTP scheduler failure never suppresses committed Flutter event or call action`() = runTest {
         controller.initialize(callbacks)
         controller.reportIncoming(incoming)

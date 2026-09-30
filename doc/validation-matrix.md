@@ -14,21 +14,20 @@ analyzer и форматирование прошли; платформенны�
 ранее выполненного aggregate и отдельного macOS прогона.
 
 Функциональные пробелы исходного контракта также открыты: Web outgoing,
-iOS reject, mute/hold и явная координация доступной системной аудиосессии.
-Они требуют реализации или согласованного изменения объёма выпуска; device
-test не способен подтвердить отсутствующую функцию. iOS reject не включён в
-список проверок уже реализованного поведения.
+mute/hold и полная provider/device матрица. iOS системный decline теперь
+классифицируется как `rejected` по durable ringing snapshot и покрыт Swift unit
+test, но реальный PushKit/CallKit reject relay на двух устройствах ещё не доказан.
 
 | Платформа | Адаптер | Автоматические проверки | Ручные OS/device/provider проверки |
 | --- | --- | --- | --- |
-| Android | Реализован | Kotlin/Robolectric unit, native callback fixture и debug APK прошли; remote CI not run | Incoming/outgoing/end прошли на Android 15; не подтверждены FCM, lock screen, DND, force-stop и OEM |
+| Android | Реализован | Kotlin/Robolectric unit, native callback fixture и debug APK прошли; remote CI not run | 2026-09-30: реальный FCM из test backend разбудил background process, поднял phone-call FGS, wake lock и full-screen поверх locked screen; ringtone playback подтверждён системным audio state. Не подтверждены DND, force-stop и широкая OEM-матрица |
 | iOS | Реализован | Swift tests и pod lint прошли; подписанная device-сборка прошла; remote CI not run | Incoming/outgoing/end прошли на iPad с iOS 17.3.1; не подтверждены APNs/PushKit, lock screen и завершённый процесс |
 | Web | Реализован | Свежий aggregate: worker 27/27, JS/Wasm release builds и smoke прошли; remote CI not run | Не подтверждены Web Push, закрытая вкладка, browser scheduling и notification interaction |
 | macOS | Реализован и зарегистрирован | Swift 36/36 и pod lint прошли в aggregate; macOS example build/run позднее прошёл в detached checkout с basename `jackfield`; remote CI не подтверждён | Не подтверждены реальные notification actions, фоновая доставка и provider сценарии |
 | Windows | Не реализован и не зарегистрирован: Task 11 отложен | `windows-scaffold` проверил только исходный scaffold/contract; remote CI не подтверждён | Native call behavior и OS UI не проверены; платформа не поддерживается в 0.0.2 |
 | Linux | Не реализован и не зарегистрирован: Task 12 отложен | `linux-scaffold` проверил только исходный scaffold/contract; remote CI не подтверждён | Native call behavior и OS UI не проверены; платформа не поддерживается в 0.0.2 |
 
-Предыдущий aggregate выполнил Dart format/analyze, 74/74 package tests, example
+Предыдущий aggregate выполнил Dart format/analyze, package tests, example
 analyze/25/25 tests, 248/248 публичных DartDoc, consistency fixtures,
 Go test/vet/build без Firebase credentials и локальный secret-pattern scan.
 `tool/verify.sh` завершился с **exit 1** на указанном iOS Apple blocker; это не

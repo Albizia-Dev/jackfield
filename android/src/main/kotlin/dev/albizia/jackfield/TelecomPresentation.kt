@@ -37,9 +37,9 @@ internal class TelecomPresentation(
     }
     private fun ownCallsPermission() = ContextCompat.checkSelfPermission(context, Manifest.permission.MANAGE_OWN_CALLS) == PackageManager.PERMISSION_GRANTED
     override val mechanism: String get() = when {
+        !notifications.permitted() -> "unavailable"
         manager != null && !fallback && ownCallsPermission() -> "nativeCallUi"
-        notifications.permitted() -> "systemNotification"
-        else -> "unavailable"
+        else -> "systemNotification"
     }
     override fun permissions() = mapOf(
         "manageOwnCalls" to if (ownCallsPermission()) "granted" else "denied",
@@ -48,6 +48,7 @@ internal class TelecomPresentation(
     )
 
     override suspend fun show(call: CallEntity, incoming: Boolean) {
+        if (!notifications.permitted()) throw JackfieldFailure("permissionDenied")
         JackfieldLog.info("presentation.show", call.callId, "incoming=$incoming mechanism=$mechanism")
         val telecom = manager
         if (telecom != null && !fallback && ownCallsPermission()) {
@@ -95,7 +96,6 @@ internal class TelecomPresentation(
             fallback = true
             JackfieldLog.warn("telecom.timeout_fallback", call.callId)
         }
-        if (!notifications.permitted()) throw JackfieldFailure("permissionDenied")
         notifications.show(call)
         JackfieldLog.info("presentation.notification_fallback", call.callId)
     }

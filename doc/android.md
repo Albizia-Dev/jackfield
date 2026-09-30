@@ -31,6 +31,11 @@ Android 14+ открывает системную страницу full-screen i
 для этого не нужен. Плагин не включает Firebase, signaling или media SDK и не
 обходит DND.
 
+Даже доступный Core-Telecom не считается рабочим механизмом, если call
+notifications запрещены: невидимый звонок отвергается как `permissionDenied`,
+а не выдаётся за успешно показанный `nativeCallUi`. Такой presentation failure
+записывается терминально и доступен серверу через callback.
+
 Входящий звонок запускает phone-call foreground service. Сервис удерживает
 ограниченный wake lock, проигрывает системный ringtone в цикле и повторяет
 вибрацию до ответа/отказа/завершения. Сам notification channel беззвучный, чтобы
@@ -78,6 +83,12 @@ callback пятью секундами. Flutter/HTTPS обработчик до�
 При серверном `endCall` системное представление закрывается даже при отказе
 записи события. Команда возвращает безопасный частичный отказ; после устранения
 проблемы хранения приложение повторяет `endCall` для reconciliation.
+
+Если Telecom/notification presentation не удалось создать, snapshot становится
+`failed`, а `ended(reason: failed)` атомарно попадает в Flutter inbox и, при
+настроенных callbacks, в HTTP outbox. Поэтому сервер не остаётся в ложном
+`ringing` после OEM/permission failure. Исходная ошибка presentation при этом
+возвращается вызвавшему entrypoint.
 
 Если при `endCall` Core-Telecom возвращает ошибку на `disconnect`, вызов сообщает
 `temporarilyUnavailable`, но сессия `addCall` уже завершается и control удаляется.
@@ -151,6 +162,13 @@ val result = JackfieldPushReceiver.reportIncomingCall(context, mapOf(
 Receiver не экспортируется, использует `goAsync` и не создаёт Flutter engine.
 Обработчики действий уведомления также не экспортируются; PendingIntent immutable
 и различается по полной идентичности звонка и действия.
+Полученный `END` синхронно сохраняет terminal tombstone на 24 часа. Если FCM
+доставил его раньше соответствующего `INCOMING`, позднее приглашение с тем же
+уникальным `callId` подавляется, в том числе после перезапуска процесса.
+Удалённое завершение закрывает и notification/service, и уже открытый native
+full-screen. Host-приложение открывается после Answer только после успешной
+durable регистрации действия, поэтому ошибка ответа не выводит пользователя в
+ложный экран разговора.
 
 Нативный путь пишет privacy-safe этапы с тегами `Jackfield` и
 `JackfieldExample`: FCM delivery, разбор, presentation, foreground service,

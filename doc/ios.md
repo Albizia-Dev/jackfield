@@ -24,3 +24,8 @@ Bearer token хранится в Keychain. Настроенный HTTPS callback
 Хост-приложение должно объявить `BGTaskSchedulerPermittedIdentifiers` с этим идентификатором и вызвать `JackfieldPlugin.registerBackgroundProcessing()` в `didFinishLaunchingWithOptions`, до запуска Flutter. Этот вызов также немедленно создаёт PushKit registry и CallKit controller; отдельный `prepareForVoIPPushes()` доступен host-приложению, которое не использует background callbacks. В `application(_:handleEventsForBackgroundURLSession:completionHandler:)` приложение передаёт идентификатор и completion в `JackfieldPlugin.handleBackgroundURLSessionEvents(_:completionHandler:)`; для чужого идентификатора использует свой обработчик. При переходе в foreground вызывает `JackfieldPlugin.resumeCallbackDelivery()`. [Пример AppDelegate](../example/ios/Runner/AppDelegate.swift) показывает все три точки. Эти entrypoints восстанавливают SQLite, Keychain, PushKit, CallKit и URLSession без запуска Flutter engine. Completion вызывается после обработки полученных delegate events.
 
 Wire v1 публикует только `answer_requested` и `ended`. Mute и hold CallKit не заявлены. Истёкшее действие получает `deadlineExceeded` и не переводит snapshot в `active`. PushKit, CallKit и серверные callbacks требуют проверки на устройстве и у провайдера; Swift tests и сборка CocoaPods подтверждают только кодовые контракты.
+
+Системный `CXEndCallAction` без ранее запрошенного приложением reason
+классифицируется по durable snapshot: завершение из `ringing` публикуется как
+`rejected`, из активного/исходящего состояния — как `local`. Явно заданный
+сервером или приложением reason сохраняется.

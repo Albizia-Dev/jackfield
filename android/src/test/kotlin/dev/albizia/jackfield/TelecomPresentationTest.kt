@@ -60,4 +60,18 @@ class TelecomPresentationTest {
         assertEquals("denied", presentation.permissions()["notifications"])
         assertFailsWith<JackfieldFailure> { presentation.show(call(state = "ringing"), true) }
     }
+
+    @Test fun `native telecom never claims success when call notifications are blocked`() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        Shadows.shadowOf(context).grantPermissions(Manifest.permission.MANAGE_OWN_CALLS)
+        val manager = Shadows.shadowOf(context.getSystemService(NotificationManager::class.java))
+        manager.setNotificationsEnabled(false)
+
+        val presentation = TelecomPresentation(context, this)
+
+        assertEquals("unavailable", presentation.mechanism)
+        assertEquals("permissionDenied", assertFailsWith<JackfieldFailure> {
+            presentation.show(call(state = "ringing"), true)
+        }.code)
+    }
 }

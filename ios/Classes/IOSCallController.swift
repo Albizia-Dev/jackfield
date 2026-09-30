@@ -312,11 +312,12 @@ final class IOSCallController: NSObject, CXProviderDelegate {
   }
 
   func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
-    let reason = requestedEndReasons.removeValue(forKey: action.callUUID) ?? "local"
+    let requestedReason = requestedEndReasons.removeValue(forKey: action.callUUID)
     Task {
       do {
         guard let callId = try await knownCallId(action.callUUID),
               let record = try await store.snapshot(callId: callId) else { action.fail(); return }
+        let reason = CallEndReasonPolicy.systemEnd(requested: requestedReason, state: record.state)
         if record.state != "ended" {
           if let actionId = record.actionId, pendingAnswers[actionId] != nil {
             _ = try await complete(actionId: actionId, succeeded: false)

@@ -58,7 +58,26 @@ class CallController(
         val call = CallEntity(id, if (incoming) "ringing" else "connecting", media, party.getValue("id"), party.getValue("displayName"))
         dao.persist(call, null, 0)
         try { presentation.show(call, incoming) }
-        catch (error: Exception) { dao.saveCall(call.copy(state = "failed")); throw error }
+        catch (error: Exception) {
+            val failed = call.copy(state = "failed", sequence = call.sequence + 1)
+            val now = clock()
+            val config = try { configuration.load() } catch (configurationError: Exception) {
+                recordError(configurationError)
+                null
+            }
+            val terminal = EventEntity(
+                eventId(), id, failed.sequence, now, "ended", reason = "failed",
+                expiresAt = boundedAdd(now, config?.timeToLiveMs ?: 86_400_000),
+                httpState = if (config == null) "disabled" else "pending",
+            )
+            try { admit(failed, terminal, config) }
+            catch (journalError: Exception) {
+                // Presentation failure must remain terminal even when the outbox is full.
+                dao.saveCall(failed)
+                recordError(journalError)
+            }
+            throw error
+        }
         call
     }
 

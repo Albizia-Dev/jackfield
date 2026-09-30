@@ -1,5 +1,11 @@
 import Foundation
 
+enum CallEndReasonPolicy {
+  static func systemEnd(requested: String?, state: String) -> String {
+    requested ?? (state == "ringing" ? "rejected" : "local")
+  }
+}
+
 public enum JackfieldCoreError: Error, Equatable {
   case protocolFailure, storageFull, invalidState, deadlineExceeded, temporarilyUnavailable, platformFailure
 }

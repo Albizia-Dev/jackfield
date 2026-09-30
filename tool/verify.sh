@@ -35,6 +35,7 @@ dart_gate() {
   run 'Flutter analyze' flutter analyze --no-pub
   run 'Flutter tests' flutter test --no-pub
   run 'public DartDoc coverage' dart run tool/check_public_api_docs.dart
+  run 'pub package validation' dart pub publish --dry-run
   run 'example analyze' bash -c 'cd example && flutter analyze --no-pub'
   run 'example tests' bash -c 'cd example && flutter test --no-pub'
   consistency

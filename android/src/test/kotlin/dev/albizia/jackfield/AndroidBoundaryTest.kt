@@ -3,6 +3,8 @@ package dev.albizia.jackfield
 import android.app.NotificationManager
 import android.app.Application
 import android.content.Context
+import android.content.Intent
+import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
 import dev.albizia.jackfield.http.*
 import org.robolectric.Robolectric
@@ -64,5 +66,22 @@ class AndroidBoundaryTest {
         notifications.end("call-1")
         service.onStartCommand(JackfieldCallService.endIntent(context, "call-1"), 0, 2)
         assertTrue(manager.activeNotifications.isEmpty())
+    }
+
+    @Test fun `remote end closes the matching full screen call surface`() {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val intent = Intent(context, JackfieldIncomingCallActivity::class.java)
+            .putExtra(JackfieldIncomingCallActivity.EXTRA_CALL_ID, "call-1")
+            .putExtra(JackfieldIncomingCallActivity.EXTRA_CALLER_NAME, "Caller")
+        val activity = Robolectric.buildActivity(JackfieldIncomingCallActivity::class.java, intent)
+            .create().start().resume().get()
+
+        CallNotifications(context).end("another-call")
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        assertFalse(activity.isFinishing)
+
+        CallNotifications(context).end("call-1")
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(activity.isFinishing)
     }
 }

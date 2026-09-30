@@ -24,8 +24,15 @@ class JackfieldPushReceiver : BroadcastReceiver() {
         runtime.scope.launch {
             try {
                 val payload = Wire.jsonMap(JSONObject(intent.getStringExtra("payload") ?: Wire.fail()))
+                val tombstones = PushTombstones(context)
                 when (intent.action) {
                     ACTION_INCOMING -> {
+                        val data = Wire.request(payload, setOf("callId", "caller", "media"))
+                        val callId = Wire.string(data["callId"])
+                        if (tombstones.contains(callId)) {
+                            JackfieldLog.info("push.incoming_suppressed", callId, "reason=terminal_tombstone")
+                            return@launch
+                        }
                         val call = runtime.controller.reportIncoming(payload)
                         JackfieldLog.info("push.incoming_presented", call.callId)
                     }
@@ -33,6 +40,11 @@ class JackfieldPushReceiver : BroadcastReceiver() {
                         val data = Wire.request(payload, setOf("callId", "reason"))
                         val callId = Wire.string(data["callId"])
                         val reason = Wire.reason(data["reason"])
+                        tombstones.mark(callId)
+                        if (runtime.controller.snapshot(callId) == null) {
+                            JackfieldLog.info("push.end_tombstoned", callId, "reason=$reason")
+                            return@launch
+                        }
                         runtime.controller.endCall(callId, reason)
                         JackfieldLog.info("push.end_applied", callId, "reason=$reason")
                     }
