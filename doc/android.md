@@ -1,7 +1,8 @@
 # Android-адаптер Jackfield
 
 Требования: Android 8.0 / API 26+, `compileSdk 36`, Java 17. Пакет использует
-Room 2.8.4, KSP 2.3.5, WorkManager 2.10.1 и Core-Telecom 1.0.1. Example явно
+Kotlin 2.1.0, KSP 2.1.0-1.0.29, AGP 8.9.1, Room 2.7.2,
+WorkManager 2.10.1 и Core-Telecom 1.0.1. Example явно
 устанавливает `minSdk = 26`; стандартный Flutter минимум 24 здесь недостаточен.
 
 ## Системное представление
@@ -21,11 +22,21 @@ self-managed VoIP calls. `systemNotification` означает notification fall
 состояние уведомлений и `MANAGE_OWN_CALLS`, очереди и безопасную категорию ошибки.
 Регистрация и CallStyle следуют [контракту Core-Telecom](https://developer.android.com/develop/connectivity/telecom/voip-app/telecom).
 
-Manifest включает `INTERNET`, `MANAGE_OWN_CALLS` и `POST_NOTIFICATIONS`.
-Инициализация не показывает системных запросов разрешений. Приложение отвечает
-за разрешение уведомлений, свои media permissions, аудио/видео и foreground
-service медиатранспорта. Плагин не включает Firebase, signaling или media SDK,
-не запрашивает full-screen intent и не обходит DND.
+Manifest включает разрешения звонка, микрофона, Bluetooth, уведомлений,
+foreground-service, wake lock и full-screen intent. Инициализация не показывает
+системных запросов. Вызванный из Flutter пользовательским действием
+`requestPermissions()` последовательно запрашивает runtime permissions и на
+Android 14+ открывает системную страницу full-screen intent, если доступ ещё не
+выдан. Плагин возвращает типизированный итог каждого разрешения; host Kotlin-код
+для этого не нужен. Плагин не включает Firebase, signaling или media SDK и не
+обходит DND.
+
+Входящий звонок запускает phone-call foreground service. Сервис удерживает
+ограниченный wake lock, проигрывает системный ringtone в цикле и повторяет
+вибрацию до ответа/отказа/завершения. Сам notification channel беззвучный, чтобы
+не смешивать короткий notification sound с ringtone. Full-screen activity
+показывается поверх lock screen и работает без Flutter engine; действия пишутся
+в durable event store, а Answer затем запускает приложение для сигналинга.
 
 В `features` входят durable events, HTTPS callbacks, push tokens; при доступном
 представлении добавляются incoming, outgoing, answer, reject, end. Mute и hold
@@ -33,10 +44,11 @@ service медиатранспорта. Плагин не включает Fireb
 Telecom calls создаются без capability удержания. Неподдержанный системный запрос
 смены media state не подтверждается как выполненный.
 
-Исходящий звонок регистрируется в `connecting`. Wire v1 не предоставляет команды
-«исходящий медиаканал подключён», поэтому `startOutgoingCall` не означает переход
-в `active`; этот переход требует будущего расширения контракта. Приложение может
-обновить отображение и завершить такой звонок через существующие команды.
+Исходящий звонок регистрируется в `connecting`. После успешного сигналинга
+приложение вызывает `setCallConnected`: snapshot становится `active`, Telecom
+получает `setActive`, foreground service включает `MODE_IN_COMMUNICATION` и
+запрашивает voice-communication audio focus. Завершение освобождает focus и
+восстанавливает прежний audio mode.
 
 ## Хранение, действия и replay
 

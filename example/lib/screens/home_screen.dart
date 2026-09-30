@@ -84,6 +84,11 @@ class _HomeScreenState extends State<HomeScreen> {
               label: const Text('Начать исходящий'),
             ),
             OutlinedButton.icon(
+              onPressed: widget.controller.connectCurrentCall,
+              icon: const Icon(Icons.phone_in_talk),
+              label: const Text('Отметить подключённым'),
+            ),
+            OutlinedButton.icon(
               onPressed: widget.controller.endCurrentCall,
               icon: const Icon(Icons.call_end),
               label: const Text('Завершить выбранный'),

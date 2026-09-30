@@ -5,10 +5,8 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.media.AudioAttributes
 import android.net.Uri
 import android.os.Build
-import android.provider.Settings
 import androidx.core.content.ContextCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -19,18 +17,12 @@ import dev.albizia.jackfield.store.CallEntity
 internal class CallNotifications(private val context: Context) {
     private val manager = context.getSystemService(NotificationManager::class.java)
     init {
-        val ringtone = Settings.System.DEFAULT_RINGTONE_URI
-        val audio = AudioAttributes.Builder()
-            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-            .build()
         manager.createNotificationChannel(
             NotificationChannel(CHANNEL, "Incoming calls", NotificationManager.IMPORTANCE_HIGH).apply {
                 description = "Incoming and active internet calls"
                 lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
-                enableVibration(true)
-                vibrationPattern = longArrayOf(0, 1000, 500, 1000)
-                setSound(ringtone, audio)
+                enableVibration(false)
+                setSound(null, null)
             },
         )
     }
@@ -47,7 +39,7 @@ internal class CallNotifications(private val context: Context) {
         try { context.startService(JackfieldCallService.endIntent(context, callId)) } catch (_: IllegalStateException) { /* Nothing remains to stop. */ }
     }
     companion object {
-        const val CHANNEL = "jackfield.calls.v2"
+        const val CHANNEL = "jackfield.calls.v3"
         fun notificationId(callId: String) = (callId.hashCode() and Int.MAX_VALUE).coerceAtLeast(1)
         fun build(context: Context, call: CallEntity) = build(context, call.callId, call.callerName, call.state)
         fun build(context: Context, callId: String, callerName: String, state: String): android.app.Notification {
@@ -63,8 +55,8 @@ internal class CallNotifications(private val context: Context) {
                 .setCategory(NotificationCompat.CATEGORY_CALL).setOngoing(true).setStyle(style)
                 .setContentIntent(fullScreen(context, callId, callerName))
                 .setFullScreenIntent(if (incoming) fullScreen(context, callId, callerName) else null, true)
-                .setSound(if (incoming) Settings.System.DEFAULT_RINGTONE_URI else null)
-                .setVibrate(if (incoming) longArrayOf(0, 1000, 500, 1000) else null)
+                .setSound(null)
+                .setVibrate(null)
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC).setPriority(NotificationCompat.PRIORITY_MAX)
                 .build()
         }

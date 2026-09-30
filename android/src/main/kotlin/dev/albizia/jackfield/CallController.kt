@@ -73,6 +73,17 @@ class CallController(
         next
     }
 
+    suspend fun setCallConnected(callId: String): CallEntity = mutex.withLock {
+        val current = requireCall(callId)
+        if (current.state == "active") return@withLock current
+        if (current.state != "connecting" || current.actionId != null) throw JackfieldFailure("invalidState")
+        presentation.activate(current)
+        val next = current.copy(state = "active")
+        dao.saveCall(next)
+        presentation.update(next)
+        next
+    }
+
     suspend fun requestAnswer(callId: String, actionId: String = UUID.randomUUID().toString(), deadline: Long = boundedAdd(clock(), 4500)): CallEntity = mutex.withLock {
         Wire.string(actionId)
         val current = requireCall(callId)

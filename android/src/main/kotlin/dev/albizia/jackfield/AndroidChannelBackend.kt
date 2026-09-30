@@ -19,6 +19,10 @@ internal class AndroidChannelBackend(private val controller: CallController) {
                 "reportIncomingCall" -> Wire.success(controller.reportIncoming(Wire.request(arguments, setOf("callId", "caller", "media"))).toWire())
                 "startOutgoingCall" -> Wire.success(controller.startOutgoing(Wire.request(arguments, setOf("callId", "callee", "media"))).toWire())
                 "updateCall" -> Wire.success(controller.updateCall(Wire.request(arguments, setOf("callId"), setOf("caller", "media"))).toWire())
+                "setCallConnected" -> {
+                    val data = Wire.request(arguments, setOf("callId"))
+                    Wire.success(controller.setCallConnected(Wire.string(data["callId"])).toWire())
+                }
                 "endCall" -> {
                     val data = Wire.request(arguments, setOf("callId", "reason"))
                     Wire.success(controller.endCall(Wire.string(data["callId"]), Wire.reason(data["reason"])).toWire())
@@ -46,6 +50,6 @@ internal class AndroidChannelBackend(private val controller: CallController) {
     }
     companion object {
         val queries = setOf("capabilities", "diagnostics")
-        val methods = queries + setOf("initialize", "requestPermissions", "pushTokens", "reportIncomingCall", "startOutgoingCall", "updateCall", "endCall", "completeAction", "acknowledgeEvents")
+        val methods = queries + setOf("initialize", "requestPermissions", "pushTokens", "reportIncomingCall", "startOutgoingCall", "updateCall", "setCallConnected", "endCall", "completeAction", "acknowledgeEvents")
     }
 }

@@ -227,5 +227,42 @@ final class JackfieldWebPlatform extends JackfieldPlatform {
   }
 
   @override
+  Future<JackfieldResult<JackfieldPermissionReport>> requestPermissions(
+    JackfieldPermissionRequest request,
+  ) async {
+    try {
+      final notification = request.notifications
+          ? await WebBridge.requestPermission()
+          : WebBridge.permission();
+      JackfieldPermissionState state(String value) => switch (value) {
+        'granted' => JackfieldPermissionState.granted,
+        'denied' => JackfieldPermissionState.denied,
+        'default' => JackfieldPermissionState.notDetermined,
+        _ => JackfieldPermissionState.unknown,
+      };
+      return JackfieldSuccess(
+        JackfieldPermissionReport(
+          states: {
+            if (request.microphone)
+              JackfieldPermission.microphone: JackfieldPermissionState.unknown,
+            if (request.notifications)
+              JackfieldPermission.notifications: state(notification),
+            if (request.bluetooth)
+              JackfieldPermission.bluetooth: JackfieldPermissionState.unknown,
+            if (request.fullScreenIntent)
+              JackfieldPermission.fullScreenIntent:
+                  JackfieldPermissionState.unknown,
+          },
+          openedSettings: false,
+        ),
+      );
+    } catch (_) {
+      return const JackfieldFailure(
+        JackfieldError(JackfieldErrorCode.platformFailure),
+      );
+    }
+  }
+
+  @override
   Stream<JackfieldEvent> get events => _events.stream;
 }

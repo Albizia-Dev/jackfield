@@ -253,6 +253,9 @@ void main() {
       'callId': 'call-1',
       'media': 'video',
     });
+    await api.setCallConnected(const CallId('call-1'));
+    expect(calls.last.method, 'setCallConnected');
+    expect(calls.last.arguments, {'version': 1, 'callId': 'call-1'});
     await api.endCall(const CallId('call-1'), EndReason.remote);
     expect(calls.last.method, 'endCall');
     expect(calls.last.arguments, {

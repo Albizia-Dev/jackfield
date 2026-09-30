@@ -20,6 +20,7 @@ class CallControllerTest {
     private lateinit var controller: CallController
     private val shown = mutableListOf<String>()
     private val ended = mutableListOf<String>()
+    private val activated = mutableListOf<String>()
     private val emitted = mutableListOf<Map<String, Any?>>()
     private var now = 1000L
     private var eventNumber = 0
@@ -32,7 +33,7 @@ class CallControllerTest {
             override fun permissions() = mapOf("notifications" to "granted")
             override suspend fun show(call: CallEntity, incoming: Boolean) { shown.add(call.callId) }
             override suspend fun update(call: CallEntity) {}
-            override suspend fun activate(call: CallEntity) {}
+            override suspend fun activate(call: CallEntity) { activated.add(call.callId) }
             override suspend fun end(callId: String) { ended.add(callId) }
         }, configuration, { _, _ -> if (scheduleFailure) throw IllegalStateException("secret") }, { now }, { "event-${++eventNumber}" })
         controller.eventListener = { wire ->
@@ -58,6 +59,17 @@ class CallControllerTest {
         assertEquals(true, (db.events().call("call-1")!!.toWire()["actionReceipts"] as List<*>).let { (it.single() as Map<*, *>)["succeeded"] })
         controller.acknowledgeEvents(listOf("event-1"))
         assertEquals(1, db.events().pendingHttp().size)
+    }
+
+    @Test fun `outgoing call becomes active only through explicit connected command`() = runTest {
+        controller.startOutgoing(
+            mapOf("version" to 1, "callId" to "outgoing-1", "callee" to mapOf("id" to "peer", "displayName" to "Peer"), "media" to "audio"),
+        )
+        assertEquals("connecting", controller.snapshot("outgoing-1")!!.state)
+        assertEquals("active", controller.setCallConnected("outgoing-1").state)
+        assertEquals(listOf("outgoing-1"), activated)
+        assertEquals("active", controller.setCallConnected("outgoing-1").state)
+        assertEquals(listOf("outgoing-1"), activated)
     }
 
     @Test fun `HTTP scheduler failure never suppresses committed Flutter event or call action`() = runTest {

@@ -16,6 +16,9 @@ external void _listen(JSFunction listener);
 @JS('JackfieldBridge.permission')
 external JSString _permission();
 
+@JS('JackfieldBridge.requestPermissionFromGesture')
+external JSPromise<JSString> _requestPermissionFromGesture();
+
 @JS('JackfieldBridge.pushEndpoint')
 external JSPromise<JSString> _pushEndpoint();
 
@@ -49,6 +52,10 @@ abstract final class WebBridge {
 
   /// Current notification permission, read without prompting.
   static String permission() => _permission().toDart;
+
+  /// Requests browser notification permission from a user gesture.
+  static Future<String> requestPermission() async =>
+      (await _requestPermissionFromGesture().toDart).toDart;
 
   /// Existing Push API endpoint, without requesting subscription or permission.
   static Future<String> pushEndpoint() async =>

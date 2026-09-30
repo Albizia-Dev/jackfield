@@ -73,6 +73,14 @@ class MethodChannelJackfield extends JackfieldPlatform {
         WireCodec.decodeCallResult,
       );
 
+  /// Marks an outgoing call connected and activates native call audio.
+  @override
+  Future<JackfieldResult<CallSnapshot>> setCallConnected(CallId id) => _invoke(
+    'setCallConnected',
+    () => WireCodec.encodeCallIdentity(id),
+    WireCodec.decodeCallResult,
+  );
+
   /// Sends a call termination request with its reason.
   @override
   Future<JackfieldResult<CallSnapshot>> endCall(CallId id, EndReason reason) =>

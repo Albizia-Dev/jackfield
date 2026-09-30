@@ -91,7 +91,11 @@ void main() {
       plugin,
       contains('id("com.google.devtools.ksp") version "2.1.0-1.0.29"'),
     );
-    for (final artifact in <String>['room-runtime', 'room-ktx', 'room-compiler']) {
+    for (final artifact in <String>[
+      'room-runtime',
+      'room-ktx',
+      'room-compiler',
+    ]) {
       expect(plugin, contains('androidx.room:$artifact:2.7.2'));
     }
     expect(example, contains('id("com.android.application") version "8.9.1"'));

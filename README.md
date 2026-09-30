@@ -14,6 +14,7 @@ Add `jackfield: ^0.0.2` to your application's `pubspec.yaml`, then import `packa
 import 'package:jackfield/jackfield.dart';
 
 final calls = Jackfield.instance;
+final permissions = await calls.requestPermissions();
 final initialization = await calls.initialize(const JackfieldConfiguration());
 if (initialization case JackfieldFailure<void>(:final error)) {
   print(error.code);
@@ -30,6 +31,9 @@ if (capabilities.features.contains(JackfieldFeature.incoming)) {
   );
   if (outcome case JackfieldFailure<CallSnapshot>(:final error)) {
     print(error.code);
+  } else {
+    await signaling.connect('outgoing-attempt-43');
+    await calls.setCallConnected(const CallId('outgoing-attempt-43'));
   }
 }
 
@@ -47,7 +51,15 @@ if (capabilities.features.contains(JackfieldFeature.outgoing)) {
 }
 ```
 
-Check `capabilities()` before each platform-sensitive action. Web currently does not advertise outgoing calls. Starting a call does not connect signaling or media. Reconcile business state with your server and call `endCall` when the remote side ends a call. Available capabilities can change with permissions and system registration. See the [capability matrix](doc/capabilities.md).
+Call `requestPermissions()` from a user action; Android requests microphone,
+notifications, Bluetooth routing and full-screen incoming-call access without
+host Kotlin code, iOS requests microphone access, and Web requests notification
+permission. Check `capabilities()` before each platform-sensitive action. Web
+currently does not advertise outgoing calls. Starting a call does not connect
+signaling or media; after the application has connected an outgoing call, call
+`setCallConnected`. Reconcile business state with your server and call `endCall`
+when the remote side ends a call. Available capabilities can change with
+permissions and system registration. See the [capability matrix](doc/capabilities.md).
 
 ## Complete actions and acknowledge replay
 

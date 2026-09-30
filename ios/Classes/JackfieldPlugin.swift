@@ -10,6 +10,7 @@ import JackfieldCore
 @available(iOS 13.0, *)
 public final class JackfieldPlugin: NSObject, FlutterPlugin {
   private static let backgroundRuntime = JackfieldBackgroundRuntime.shared
+  private static var preparedInstance: JackfieldPlugin?
   private let store: EventStore?
   private var controller: IOSCallController?
   private var registry: JackfieldPushRegistry?
@@ -33,7 +34,14 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
   }
 
   public static func registerBackgroundProcessing() {
+    prepareForVoIPPushes()
     backgroundRuntime.registerBackgroundProcessing()
+  }
+
+  /// Starts PushKit and CallKit before a Flutter engine exists.
+  public static func prepareForVoIPPushes() {
+    let prepare = { if preparedInstance == nil { preparedInstance = JackfieldPlugin() } }
+    if Thread.isMainThread { prepare() } else { DispatchQueue.main.sync(execute: prepare) }
   }
 
   public static func resumeCallbackDelivery() {
@@ -46,7 +54,8 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
   }
 
   public static func register(with registrar: FlutterPluginRegistrar) {
-    let instance = JackfieldPlugin()
+    prepareForVoIPPushes()
+    guard let instance = preparedInstance else { return }
     let channel = FlutterMethodChannel(name: "jackfield", binaryMessenger: registrar.messenger())
     registrar.addMethodCallDelegate(instance, channel: channel)
     FlutterEventChannel(name: "jackfield/events", binaryMessenger: registrar.messenger()).setStreamHandler(JackfieldStreamHandler(onListen: { [weak instance] sink in
@@ -86,6 +95,10 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
           let media: String? = data["media"] == nil ? nil : try Self.media(data["media"])
           guard let controller = self.controller else { throw JackfieldCoreError.platformFailure }
           result(Self.success(try await controller.update(callId: id, callerId: person?.0, callerName: person?.1, media: media).toWire()))
+        case "setCallConnected":
+          guard Set(data.keys) == Set(["version", "callId"]) else { throw JackfieldCoreError.protocolFailure }
+          guard let controller = self.controller else { throw JackfieldCoreError.platformFailure }
+          result(Self.success(try await controller.setConnected(callId: Self.nonempty(data["callId"])).toWire()))
         case "endCall":
           let id = try Self.nonempty(data["callId"])
           let reason = try Self.nonempty(data["reason"])
@@ -166,6 +179,13 @@ public final class JackfieldPlugin: NSObject, FlutterPlugin {
       Task {
         do { _ = try await controller.reportIncoming(callId: callId, callerId: callerId, callerName: callerName, media: media) }
         catch { Self.logFailure("push.reportIncomingCall", error) }
+        completion()
+      }
+    }, ended: { [weak self] callId, reason, completion in
+      guard let self, let controller = self.controller else { completion(); return }
+      Task {
+        do { _ = try await controller.end(callId: callId, reason: reason) }
+        catch { Self.logFailure("push.endCall", error) }
         completion()
       }
     }, tokenChanged: { [weak self] value, removed in

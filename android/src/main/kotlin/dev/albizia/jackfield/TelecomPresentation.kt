@@ -94,7 +94,8 @@ internal class TelecomPresentation(
     override suspend fun activate(call: CallEntity) {
         if (waitingForAnswer.contains(call.callId)) return
         controls[call.callId]?.let { control ->
-            val result = control.answer(if (call.media == "video") CallAttributesCompat.CALL_TYPE_VIDEO_CALL else CallAttributesCompat.CALL_TYPE_AUDIO_CALL)
+            val result = if (call.actionId == null) control.setActive()
+                else control.answer(if (call.media == "video") CallAttributesCompat.CALL_TYPE_VIDEO_CALL else CallAttributesCompat.CALL_TYPE_AUDIO_CALL)
             if (result !is CallControlResult.Success) throw JackfieldFailure("temporarilyUnavailable")
         }
         notifications.activate(call.callId)

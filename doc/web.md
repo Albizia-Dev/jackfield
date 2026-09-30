@@ -11,7 +11,14 @@ JackfieldWorker.install({ leaseMs: 45000, heartbeatMs: 15000 });
 
 The example's `web/jackfield_host_worker.js` shows the integration. Register it under the application's origin and scope, and expose the exact ready registration as `window.JackfieldHostWorkerRegistration` before Flutter initializes. The bridge awaits this promise and sends commands only to its active worker. Call `JackfieldWeb.bindPushIdentity(installationId: ..., sessionId: ...)` with server-issued opaque IDs for the current login session. Rotate the session ID on account change. Push payloads must be JSON with `version: 1`, `type: "incoming"`, matching `installationId` and `sessionId`, stable `callId` and `eventId`, caller `{id, displayName}`, `media: "audio" | "video"`, and an ISO `expiresAt` no more than five minutes ahead. Missing or mismatched binding and malformed or expired payloads produce a visible status notification. Duplicate events, existing calls, and ended calls do not ring again.
 
-Initialization never opens a permission prompt. To opt in, invoke `JackfieldWeb.subscribePushFromUserGesture(applicationServerKey)` directly from a user initiated flow such as a button handler. Pass the VAPID public key in base64url form. The returned string is the Push API endpoint; `pushTokens()` reads an existing subscription without prompting. Browser subscription removal and provider-side token rotation remain the host application's responsibility.
+Initialization never opens a permission prompt. `Jackfield.requestPermissions()`
+requests notification permission from a user gesture and reports other native
+call permissions as inapplicable. To also create a Web Push subscription, invoke
+`JackfieldWeb.subscribePushFromUserGesture(applicationServerKey)` from the same
+kind of user-initiated flow. Pass the VAPID public key in base64url form. The
+returned string is the Push API endpoint; `pushTokens()` reads an existing
+subscription without prompting. Browser subscription removal and provider-side
+token rotation remain the host application's responsibility.
 
 The active tab claims a 45 second IndexedDB lease and renews it every 15 seconds. A new owner immediately receives unacknowledged events; pending reads and acknowledgements require the current owner and lease token. Acknowledgement only removes an event from future replay; it does not complete a pending answer action. Notification Answer and Reject actions persist their event and receipt before delivery.
 

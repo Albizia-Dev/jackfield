@@ -69,6 +69,16 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
             icon: const Icon(Icons.refresh),
             label: const Text('Обновить диагностику'),
           ),
+          FilledButton.icon(
+            onPressed: widget.controller.requestPermissions,
+            icon: const Icon(Icons.admin_panel_settings),
+            label: const Text('Запросить разрешения звонка'),
+          ),
+          if (widget.controller.permissionReport case final report?)
+            SelectableText(
+              'Результат запроса: ${report.states.entries.map((e) => '${e.key.name}=${e.value.name}').join(', ')}'
+              '${report.openedSettings ? '\nОткрывались системные настройки' : ''}',
+            ),
           const Divider(),
           Text(
             'Автономный HTTPS callback',

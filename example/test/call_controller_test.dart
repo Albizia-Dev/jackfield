@@ -542,6 +542,10 @@ final class RecordingJackfield implements Jackfield {
       : await outgoingResult!.future;
 
   @override
+  Future<JackfieldResult<CallSnapshot>> setCallConnected(CallId id) async =>
+      const JackfieldFailure(JackfieldError(JackfieldErrorCode.unsupported));
+
+  @override
   Future<JackfieldResult<CallSnapshot>> updateCall(CallUpdate update) async =>
       const JackfieldFailure(JackfieldError(JackfieldErrorCode.unsupported));
 }

@@ -1,5 +1,6 @@
 import CallKit
 import Foundation
+import AVFoundation
 
 #if canImport(JackfieldCore)
 import JackfieldCore
@@ -24,6 +25,8 @@ final class IOSCallController: NSObject, CXProviderDelegate {
     config.supportsVideo = true
     config.supportedHandleTypes = [.generic]
     config.maximumCallsPerCallGroup = 1
+    config.maximumCallGroups = 1
+    config.includesCallsInRecents = true
     provider = CXProvider(configuration: config)
     super.init()
     provider.setDelegate(self, queue: .main)
@@ -62,6 +65,7 @@ final class IOSCallController: NSObject, CXProviderDelegate {
     update.remoteHandle = CXHandle(type: .generic, value: callerId)
     update.localizedCallerName = callerName
     update.hasVideo = media == "video"
+    Self.restrictUnsupportedActions(update)
     try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
       provider.reportNewIncomingCall(with: id, update: update) { error in
         if let error { continuation.resume(throwing: error) }
@@ -86,6 +90,11 @@ final class IOSCallController: NSObject, CXProviderDelegate {
     let record = CallRecord(callId: callId, state: "connecting", media: media, callerId: calleeId, callerName: calleeName, systemUUID: id)
     do { try await store.save(snapshot: record) }
     catch { provider.reportCall(with: id, endedAt: Date(), reason: .failed); throw error }
+    let update = CXCallUpdate()
+    update.localizedCallerName = calleeName
+    update.hasVideo = media == "video"
+    Self.restrictUnsupportedActions(update)
+    provider.reportCall(with: id, updated: update)
     provider.reportOutgoingCall(with: id, startedConnectingAt: Date())
     return record
   }
@@ -97,8 +106,20 @@ final class IOSCallController: NSObject, CXProviderDelegate {
     let update = CXCallUpdate()
     update.localizedCallerName = record.callerName
     update.hasVideo = record.media == "video"
+    Self.restrictUnsupportedActions(update)
     provider.reportCall(with: try await existingUUID(callId), updated: update)
     try await store.save(snapshot: record)
+    return record
+  }
+
+  func setConnected(callId: String) async throws -> CallRecord {
+    guard var record = try await store.snapshot(callId: callId) else { throw JackfieldCoreError.invalidState }
+    if record.state == "active" { return record }
+    guard record.state == "connecting", record.actionId == nil else { throw JackfieldCoreError.invalidState }
+    let id = try await existingUUID(callId)
+    record.state = "active"
+    try await store.save(snapshot: record)
+    provider.reportOutgoingCall(with: id, connectedAt: Date())
     return record
   }
 
@@ -135,7 +156,10 @@ final class IOSCallController: NSObject, CXProviderDelegate {
     answerDeadlines.removeValue(forKey: actionId)?.cancel()
     if let event = resolution.ended { publish(event) }
     let receipt = resolution.receipt
-    if receipt.succeeded { action.fulfill() }
+    if receipt.succeeded {
+      configureAudioSession()
+      action.fulfill()
+    }
     else {
       action.fail()
       if let id = record.systemUUID { provider.reportCall(with: id, endedAt: date, reason: .failed) }
@@ -200,7 +224,30 @@ final class IOSCallController: NSObject, CXProviderDelegate {
     Task { await reconcileSystemCalls() }
   }
 
-  func provider(_ provider: CXProvider, perform action: CXStartCallAction) { action.fulfill() }
+  func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
+    configureAudioSession()
+    action.fulfill()
+  }
+
+  func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
+    configureAudioSession()
+  }
+
+  private func configureAudioSession() {
+    let audio = AVAudioSession.sharedInstance()
+    do {
+      try audio.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth])
+    } catch {
+      NSLog("[Jackfield] audio session configuration failed: %@", (error as NSError).localizedDescription)
+    }
+  }
+
+  private static func restrictUnsupportedActions(_ update: CXCallUpdate) {
+    update.supportsHolding = false
+    update.supportsGrouping = false
+    update.supportsUngrouping = false
+    update.supportsDTMF = false
+  }
 
   func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
     Task {

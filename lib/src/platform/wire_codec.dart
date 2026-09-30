@@ -99,6 +99,12 @@ abstract final class WireCodec {
     'reason': reason.name,
   };
 
+  /// Encodes a command that targets one existing call.
+  static Map<String, Object?> encodeCallIdentity(CallId id) => {
+    'version': version,
+    'callId': _validatedId(id.value),
+  };
+
   /// Encodes action completion without any event acknowledgement.
   static Map<String, Object?> encodeActionResult(
     ActionId id,

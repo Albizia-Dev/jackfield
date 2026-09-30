@@ -33,6 +33,7 @@ final class CallController extends ChangeNotifier {
   String status = 'Ожидание инициализации';
   JackfieldCapabilities? capabilities;
   JackfieldDiagnostics? diagnostics;
+  JackfieldPermissionReport? permissionReport;
   PushTokenSnapshot? tokens;
   CallId? currentCallId;
   StreamSubscription<JackfieldEvent>? _events;
@@ -91,6 +92,23 @@ final class CallController extends ChangeNotifier {
     }
   }
 
+  Future<void> requestPermissions() async {
+    try {
+      final result = await jackfield.requestPermissions();
+      if (result is JackfieldSuccess<JackfieldPermissionReport>) {
+        permissionReport = result.value;
+        _record(
+          'Разрешения: ${result.value.states.entries.map((entry) => '${entry.key.name}=${entry.value.name}').join(', ')}',
+        );
+        await refresh();
+      } else {
+        _showResult('Разрешения', result);
+      }
+    } catch (error) {
+      _failure('Разрешения', error);
+    }
+  }
+
   Future<void> incoming({required String callId, required String party}) async {
     try {
       final id = CallId(callId.trim());
@@ -122,6 +140,21 @@ final class CallController extends ChangeNotifier {
       _showResult('Исходящий $callId', result);
     } catch (error) {
       _failure('Исходящий', error);
+    }
+  }
+
+  Future<void> connectCurrentCall() async {
+    final id = currentCallId;
+    if (id == null) {
+      _record('Нет выбранного исходящего звонка');
+      return;
+    }
+    try {
+      final result = await jackfield.setCallConnected(id);
+      _selectLiveCall(id, result);
+      _showResult('Звонок подключён', result);
+    } catch (error) {
+      _failure('Подключение звонка', error);
     }
   }
 

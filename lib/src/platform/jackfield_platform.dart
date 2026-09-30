@@ -62,6 +62,10 @@ abstract class JackfieldPlatform extends PlatformInterface {
   Future<JackfieldResult<CallSnapshot>> updateCall(CallUpdate update) async =>
       const JackfieldFailure(JackfieldError(JackfieldErrorCode.unsupported));
 
+  /// Marks an outgoing call connected and activates native call audio.
+  Future<JackfieldResult<CallSnapshot>> setCallConnected(CallId id) async =>
+      const JackfieldFailure(JackfieldError(JackfieldErrorCode.unsupported));
+
   /// Ends the specified call with an explicit termination reason.
   Future<JackfieldResult<CallSnapshot>> endCall(
     CallId id,

@@ -43,6 +43,9 @@ abstract class Jackfield {
   /// Updates the system presentation of an existing call.
   Future<JackfieldResult<CallSnapshot>> updateCall(CallUpdate update);
 
+  /// Marks an outgoing call connected and activates native call audio.
+  Future<JackfieldResult<CallSnapshot>> setCallConnected(CallId id);
+
   /// Ends the specified call with an explicit termination reason.
   Future<JackfieldResult<CallSnapshot>> endCall(CallId id, EndReason reason);
 
@@ -104,6 +107,10 @@ final class _Jackfield implements Jackfield {
   @override
   Future<JackfieldResult<CallSnapshot>> updateCall(CallUpdate update) =>
       _platform.updateCall(update);
+
+  @override
+  Future<JackfieldResult<CallSnapshot>> setCallConnected(CallId id) =>
+      _platform.setCallConnected(id);
 
   @override
   Future<JackfieldResult<CallSnapshot>> endCall(CallId id, EndReason reason) =>
