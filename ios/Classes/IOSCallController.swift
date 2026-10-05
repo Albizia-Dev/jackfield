@@ -304,7 +304,6 @@ final class IOSCallController: NSObject, CXProviderDelegate {
 
   func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
     JackfieldLog.info("callkit.audio_activated")
-    configureAudioSession()
   }
 
   private func configureAudioSession() {
