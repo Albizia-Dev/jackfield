@@ -99,6 +99,7 @@ final class CallController extends ChangeNotifier {
           callId: id,
           caller: Caller(id: party.trim(), displayName: party.trim()),
           media: CallMedia.audio,
+          expiresAt: DateTime.utc(2026, 1, 1),
         ),
       );
       _selectLiveCall(id, result);
