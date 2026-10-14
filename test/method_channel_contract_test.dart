@@ -94,10 +94,11 @@ void main() {
 
   test('invalid outgoing payload never crosses the channel', () async {
     final result = await api.reportIncomingCall(
-      const IncomingCall(
+      IncomingCall(
         callId: CallId(''),
         caller: Caller(id: 'peer', displayName: 'Peer'),
         media: CallMedia.audio,
+        expiresAt: DateTime.utc(2026, 1, 1),
       ),
     );
     expect(
@@ -171,10 +172,11 @@ void main() {
     response = {'version': 1, 'status': 'success', 'value': snapshot};
     const caller = Caller(id: 'peer-1', displayName: 'Peer');
     final incoming = await api.reportIncomingCall(
-      const IncomingCall(
+      IncomingCall(
         callId: CallId('call-1'),
         caller: caller,
         media: CallMedia.audio,
+        expiresAt: DateTime.utc(2026, 1, 1, 0, 0, 45),
       ),
     );
     final value = (incoming as JackfieldSuccess<CallSnapshot>).value;
@@ -192,6 +194,7 @@ void main() {
       'callId': 'call-1',
       'caller': {'id': 'peer-1', 'displayName': 'Peer'},
       'media': 'audio',
+      'expiresAt': '2026-01-01T00:00:45.000Z',
     });
     await api.startOutgoingCall(
       const OutgoingCall(

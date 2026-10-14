@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.util.Log
 import android.telecom.DisconnectCause
 import androidx.core.content.ContextCompat
 import androidx.core.telecom.CallAttributesCompat
@@ -52,13 +53,20 @@ internal class TelecomPresentation(
                             if (call.media == "video") CallAttributesCompat.CALL_TYPE_VIDEO_CALL else CallAttributesCompat.CALL_TYPE_AUDIO_CALL,
                             callCapabilities = 0),
                         onAnswer = {
+                            Log.i(TAG, "stage=telecom.answer callId=${call.callId}")
                             waitingForAnswer.add(call.callId)
-                            try { if (!answer(call.callId)) throw JackfieldFailure("temporarilyUnavailable") }
+                            try {
+                                val accepted = answer(call.callId)
+                                Log.i(TAG, "stage=telecom.answer_result callId=${call.callId} accepted=$accepted")
+                                if (!accepted) throw JackfieldFailure("temporarilyUnavailable")
+                            }
                             finally { waitingForAnswer.remove(call.callId) }
                         },
                         onDisconnect = { cause ->
+                            val reason = if (cause.code == DisconnectCause.REJECTED) "rejected" else "local"
+                            Log.i(TAG, "stage=telecom.disconnect callId=${call.callId} code=${cause.code} reason=$reason")
                             controls.remove(call.callId)
-                            controller.endCall(call.callId, if (cause.code == DisconnectCause.REJECTED) "rejected" else "local")
+                            controller.endCall(call.callId, reason)
                         },
                         // v1 has no hold/mute events. Never acknowledge a media change the host cannot observe.
                         onSetActive = { if (controller.snapshot(call.callId)?.state != "active") throw JackfieldFailure("unsupported") },
@@ -95,6 +103,7 @@ internal class TelecomPresentation(
         }
     }
     override suspend fun end(callId: String) {
+        Log.i(TAG, "stage=telecom.presentation_end callId=$callId hasControl=${controls.containsKey(callId)}")
         notifications.end(callId)
         controls[callId]?.let { control ->
             try {
@@ -104,5 +113,9 @@ internal class TelecomPresentation(
                 controls.remove(callId, control)
             }
         }
+    }
+
+    private companion object {
+        const val TAG = "JackfieldCallFlow"
     }
 }

@@ -29,6 +29,7 @@ final class IncomingCall {
     required this.callId,
     required this.caller,
     required this.media,
+    required this.expiresAt,
   });
 
   /// The call attempt identifier.
@@ -39,6 +40,9 @@ final class IncomingCall {
 
   /// The requested media kind.
   final CallMedia media;
+
+  /// The last instant at which this invitation may still be ringing.
+  final DateTime expiresAt;
 }
 
 /// A request to start an outgoing call.

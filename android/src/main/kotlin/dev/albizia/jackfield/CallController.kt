@@ -1,5 +1,6 @@
 package dev.albizia.jackfield
 
+import android.util.Log
 import dev.albizia.jackfield.http.CallbackConfiguration
 import dev.albizia.jackfield.http.ConfigurationStore
 import dev.albizia.jackfield.http.ConfigurationLock
@@ -50,12 +51,14 @@ class CallController(
     suspend fun startOutgoing(arguments: Map<String, Any?>): CallEntity = start(arguments, false)
     private suspend fun start(arguments: Map<String, Any?>, incoming: Boolean): CallEntity = mutex.withLock {
         val partyField = if (incoming) "caller" else "callee"
-        val data = Wire.request(arguments, setOf("callId", partyField, "media"))
+        val required = setOf("callId", partyField, "media") + if (incoming) setOf("expiresAt") else emptySet()
+        val data = Wire.request(arguments, required)
         val id = Wire.string(data["callId"])
         val party = Wire.caller(data[partyField])
         val media = Wire.media(data["media"])
+        val expiresAt = if (incoming) Wire.instant(data["expiresAt"]) else null
         dao.call(id)?.let { return@withLock it }
-        val call = CallEntity(id, if (incoming) "ringing" else "connecting", media, party.getValue("id"), party.getValue("displayName"))
+        val call = CallEntity(id, if (incoming) "ringing" else "connecting", media, party.getValue("id"), party.getValue("displayName"), expiresAt)
         dao.persist(call, null, 0)
         try { presentation.show(call, incoming) }
         catch (error: Exception) { dao.saveCall(call.copy(state = "failed")); throw error }
@@ -73,7 +76,7 @@ class CallController(
         next
     }
 
-    suspend fun requestAnswer(callId: String, actionId: String = UUID.randomUUID().toString(), deadline: Long = boundedAdd(clock(), 4500)): CallEntity = mutex.withLock {
+    suspend fun requestAnswer(callId: String, actionId: String = UUID.randomUUID().toString(), deadline: Long = boundedAdd(clock(), 15_000)): CallEntity = mutex.withLock {
         Wire.string(actionId)
         val current = requireCall(callId)
         current.receipts().firstOrNull { it["actionId"] == actionId }?.let { receipt ->
@@ -99,6 +102,7 @@ class CallController(
     suspend fun completeAction(actionId: String, succeeded: Boolean) = mutex.withLock {
         val current = dao.calls().firstOrNull { it.actionId == actionId || it.receipts().any { receipt -> receipt["actionId"] == actionId } }
             ?: throw JackfieldFailure("invalidState")
+        Log.i(TAG, "stage=controller.answer_completion callId=${current.callId} actionId=$actionId requested=$succeeded state=${current.state}")
         current.receipts().firstOrNull { it["actionId"] == actionId }?.let { receipt ->
             @Suppress("UNCHECKED_CAST") val error = receipt["error"] as? Map<String, Any?>
             if (error != null) throw JackfieldFailure(error["code"] as String)
@@ -113,24 +117,39 @@ class CallController(
         val receipt = buildMap<String, Any?> { put("actionId", actionId); put("succeeded", success); if (error != null) put("error", mapOf("code" to error)) }
         val next = current.copy(state = if (success) "active" else "failed", actionReceipts = JSONArray(current.receipts() + receipt).toString())
         dao.saveCall(next)
+        Log.i(TAG, "stage=controller.answer_result callId=${current.callId} actionId=$actionId succeeded=$success error=$error state=${next.state}")
         if (success) presentation.update(next) else presentation.end(current.callId)
         if (error != null) throw JackfieldFailure(error)
     }
 
-    suspend fun endCall(callId: String, reason: String): CallEntity = mutex.withLock {
+    suspend fun endCall(callId: String, reason: String): CallEntity {
         Wire.reason(reason)
-        val current = requireCall(callId)
+        Log.i(TAG, "stage=controller.end_requested callId=$callId reason=$reason")
+        var callExists = false
+        var shouldEndPresentation = false
         try {
-            if (current.state in setOf("ended", "failed")) return@withLock current
-            val next = current.copy(state = "ended", sequence = current.sequence + 1)
-            val config = configuration.load()
-            val now = clock()
-            admit(next, EventEntity(eventId(), callId, next.sequence, now, "ended", reason = reason,
-                expiresAt = boundedAdd(now, config?.timeToLiveMs ?: 86_400_000), httpState = if (config == null) "disabled" else "pending"), config)
-            next
+            return mutex.withLock {
+                val current = requireCall(callId)
+                callExists = true
+                Log.i(TAG, "stage=controller.end_state callId=$callId state=${current.state} reason=$reason")
+                if (current.state in setOf("ended", "failed")) {
+                    return@withLock current
+                }
+                shouldEndPresentation = true
+                val next = current.copy(state = "ended", sequence = current.sequence + 1)
+                val config = configuration.load()
+                val now = clock()
+                admit(next, EventEntity(eventId(), callId, next.sequence, now, "ended", reason = reason,
+                    expiresAt = boundedAdd(now, config?.timeToLiveMs ?: 86_400_000), httpState = if (config == null) "disabled" else "pending"), config)
+                Log.i(TAG, "stage=controller.ended_persisted callId=$callId reason=$reason sequence=${next.sequence}")
+                next
+            }
         } finally {
-            // Server reconciliation must close OS UI even when journal admission fails.
-            presentation.end(callId)
+            if (callExists && shouldEndPresentation) {
+                // Do not hold the controller mutex across Telecom callbacks.
+                Log.i(TAG, "stage=controller.presentation_end callId=$callId reason=$reason")
+                presentation.end(callId)
+            }
         }
     }
 
@@ -154,6 +173,9 @@ class CallController(
     fun snapshot(callId: String): CallEntity? = dao.call(callId)
     fun recordError(error: Throwable) { try { dao.recordError(Wire.code(error)) } catch (_: Exception) { /* Storage may itself be unavailable. */ } }
     private fun requireCall(id: String) = dao.call(Wire.string(id)) ?: throw JackfieldFailure("invalidState")
+    private companion object {
+        const val TAG = "JackfieldCallFlow"
+    }
     fun capabilities(): Map<String, Any?> {
         val mechanism = presentation.mechanism
         return mapOf("version" to 1, "platform" to "android", "mechanism" to mechanism,
