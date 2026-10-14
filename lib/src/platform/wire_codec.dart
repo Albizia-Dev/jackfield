@@ -61,6 +61,7 @@ abstract final class WireCodec {
     'callId': _validatedId(call.callId.value),
     'caller': _encodeCaller(call.caller),
     'media': call.media.name,
+    'expiresAt': call.expiresAt.toUtc().toIso8601String(),
   };
 
   /// Encodes and validates an outgoing call before crossing a channel.

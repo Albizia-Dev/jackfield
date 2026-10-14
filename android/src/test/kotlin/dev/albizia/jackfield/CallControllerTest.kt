@@ -4,6 +4,7 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import dev.albizia.jackfield.store.*
 import dev.albizia.jackfield.http.*
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Before
@@ -21,6 +22,7 @@ class CallControllerTest {
     private val shown = mutableListOf<String>()
     private val ended = mutableListOf<String>()
     private val emitted = mutableListOf<Map<String, Any?>>()
+    private var onPresentationEnd: suspend (String) -> Unit = {}
     private var now = 1000L
     private var eventNumber = 0
     private var scheduleFailure = false
@@ -33,7 +35,10 @@ class CallControllerTest {
             override suspend fun show(call: CallEntity, incoming: Boolean) { shown.add(call.callId) }
             override suspend fun update(call: CallEntity) {}
             override suspend fun activate(call: CallEntity) {}
-            override suspend fun end(callId: String) { ended.add(callId) }
+            override suspend fun end(callId: String) {
+                ended.add(callId)
+                onPresentationEnd(callId)
+            }
         }, configuration, { _, _ -> if (scheduleFailure) throw IllegalStateException("secret") }, { now }, { "event-${++eventNumber}" })
         controller.eventListener = { wire ->
             // Removing the Room commit or emitting before it makes this assertion fail.
@@ -108,6 +113,24 @@ class CallControllerTest {
         assertEquals(1, db.events().pendingFlutter().size)
     }
 
+    @Test fun `Telecom disconnect callback can reenter endCall`() = runTest {
+        controller.reportIncoming(incoming)
+        controller.eventListener = null
+        var callbackInvoked = false
+        onPresentationEnd = { callId ->
+            if (!callbackInvoked) {
+                callbackInvoked = true
+                controller.endCall(callId, "local")
+            }
+        }
+
+        withTimeout(1000) { controller.endCall("call-1", "remote") }
+
+        assertTrue(callbackInvoked)
+        assertEquals(listOf("call-1"), ended)
+        assertEquals("ended", db.events().call("call-1")!!.state)
+    }
+
     @Test fun `replay survives listener replacement and acknowledge is delivery only`() = runTest {
         controller.reportIncoming(incoming)
         controller.requestAnswer("call-1", "action-1", 6000)
@@ -176,7 +199,7 @@ class CallControllerTest {
     }
 }
 
-internal val incoming = mapOf<String, Any?>("version" to 1, "callId" to "call-1", "caller" to mapOf("id" to "peer-1", "displayName" to "Caller"), "media" to "audio")
+internal val incoming = mapOf<String, Any?>("version" to 1, "callId" to "call-1", "caller" to mapOf("id" to "peer-1", "displayName" to "Caller"), "media" to "audio", "expiresAt" to "2026-10-15T00:00:00.000Z")
 internal val callbacks = CallbackConfiguration("https://example.test/callback", "secret", 86_400_000, 1000)
 internal class MemoryConfiguration : ConfigurationStore {
     private var config: CallbackConfiguration? = null

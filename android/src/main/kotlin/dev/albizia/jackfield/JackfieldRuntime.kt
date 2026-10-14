@@ -19,7 +19,7 @@ internal class JackfieldRuntime private constructor(context: Context) {
         presentation.controller = controller
         presentation.answer = { callId ->
             val snapshot = answer(callId)
-            withTimeoutOrNull(4600) {
+            withTimeoutOrNull(15_500) {
                 while (true) {
                     val state = controller.snapshot(callId) ?: return@withTimeoutOrNull false
                     val receipt = state.receipts().firstOrNull { it["actionId"] == snapshot.actionId }

@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [CallEntity::class, EventEntity::class, AdapterState::class, PushTokenEntity::class], version = 2, exportSchema = true)
+@Database(entities = [CallEntity::class, EventEntity::class, AdapterState::class, PushTokenEntity::class], version = 3, exportSchema = true)
 abstract class JackfieldDatabase : RoomDatabase() {
     abstract fun events(): EventDao
     companion object {
@@ -16,9 +16,14 @@ abstract class JackfieldDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE adapter_state ADD COLUMN rejectedAuthFingerprint TEXT")
             }
         }
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE calls ADD COLUMN expiresAt INTEGER")
+            }
+        }
         fun open(context: Context): JackfieldDatabase = Room.databaseBuilder(
             context.applicationContext, JackfieldDatabase::class.java,
             context.noBackupFilesDir.resolve("jackfield-v1.db").absolutePath,
-        ).addMigrations(MIGRATION_1_2).build()
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
     }
 }

@@ -13,6 +13,7 @@ data class CallEntity(
     val media: String,
     val callerId: String,
     val callerName: String,
+    val expiresAt: Long? = null,
     val sequence: Long = 0,
     val actionId: String? = null,
     val actionDeadline: Long? = null,
@@ -24,6 +25,7 @@ data class CallEntity(
     fun toWire(): Map<String, Any?> = mapOf(
         "callId" to callId, "state" to state, "media" to media,
         "caller" to mapOf("id" to callerId, "displayName" to callerName),
+        "expiresAt" to expiresAt?.let(Wire::time),
         "actionId" to actionId, "actionDeadline" to actionDeadline?.let(Wire::time),
         "actionReceipts" to receipts(),
     )

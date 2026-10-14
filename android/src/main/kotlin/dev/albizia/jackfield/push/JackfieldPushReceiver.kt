@@ -3,6 +3,7 @@ package dev.albizia.jackfield.push
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.util.Log
 import dev.albizia.jackfield.JackfieldRuntime
 import dev.albizia.jackfield.Wire
 import kotlinx.coroutines.Dispatchers
@@ -14,23 +15,39 @@ import org.json.JSONObject
 class JackfieldPushReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val pending = goAsync()
-        val runtime = try { JackfieldRuntime.get(context) } catch (_: Exception) { pending.finish(); return }
+        val runtime = try {
+            JackfieldRuntime.get(context)
+        } catch (error: Exception) {
+            Log.e(TAG, "stage=push.runtime_failed action=${intent.action}", error)
+            pending.finish()
+            return
+        }
         runtime.scope.launch {
             try {
                 val payload = Wire.jsonMap(JSONObject(intent.getStringExtra("payload") ?: Wire.fail()))
                 when (intent.action) {
-                    ACTION_INCOMING -> runtime.controller.reportIncoming(payload)
+                    ACTION_INCOMING -> {
+                        Log.i(TAG, "stage=push.incoming callId=${payload["callId"]}")
+                        runtime.controller.reportIncoming(payload)
+                    }
                     ACTION_END -> {
                         val data = Wire.request(payload, setOf("callId", "reason"))
-                        runtime.controller.endCall(Wire.string(data["callId"]), Wire.reason(data["reason"]))
+                        val callId = Wire.string(data["callId"])
+                        val reason = Wire.reason(data["reason"])
+                        Log.i(TAG, "stage=push.end callId=$callId reason=$reason")
+                        runtime.controller.endCall(callId, reason)
                     }
                     else -> Wire.fail()
                 }
-            } catch (error: Exception) { runtime.controller.recordError(error) }
+            } catch (error: Exception) {
+                Log.e(TAG, "stage=push.failed action=${intent.action}", error)
+                runtime.controller.recordError(error)
+            }
             finally { pending.finish() }
         }
     }
     companion object {
+        private const val TAG = "JackfieldCallFlow"
         const val ACTION_INCOMING = "dev.albizia.jackfield.INCOMING"
         const val ACTION_END = "dev.albizia.jackfield.END"
         /** Invoke from a provider service without creating a Flutter engine. Returns wire v1. */
@@ -49,18 +66,32 @@ class JackfieldPushReceiver : BroadcastReceiver() {
 class JackfieldActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val pending = goAsync()
-        val runtime = try { JackfieldRuntime.get(context) } catch (_: Exception) { pending.finish(); return }
+        val runtime = try {
+            JackfieldRuntime.get(context)
+        } catch (error: Exception) {
+            Log.e(TAG, "stage=action.runtime_failed action=${intent.action}", error)
+            pending.finish()
+            return
+        }
         runtime.scope.launch {
             try {
                 val id = Wire.string(intent.getStringExtra("callId"))
+                Log.i(TAG, "stage=action.received action=${intent.action} callId=$id")
                 when (intent.action) {
                     "answer" -> runtime.answer(id)
                     "reject" -> runtime.controller.endCall(id, "rejected")
                     "end" -> runtime.controller.endCall(id, "local")
                     else -> Wire.fail()
                 }
-            } catch (error: Exception) { runtime.controller.recordError(error) }
+            } catch (error: Exception) {
+                Log.e(TAG, "stage=action.failed action=${intent.action}", error)
+                runtime.controller.recordError(error)
+            }
             finally { pending.finish() }
         }
+    }
+
+    private companion object {
+        const val TAG = "JackfieldCallFlow"
     }
 }
