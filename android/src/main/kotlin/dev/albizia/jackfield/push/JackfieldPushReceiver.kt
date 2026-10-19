@@ -37,6 +37,15 @@ class JackfieldPushReceiver : BroadcastReceiver() {
                         Log.i(TAG, "stage=push.end callId=$callId reason=$reason")
                         runtime.controller.endCall(callId, reason)
                     }
+                    ACTION_ACCEPTED -> {
+                        val data = Wire.request(payload, setOf("callId"))
+                        val callId = Wire.string(data["callId"])
+                        val state = runtime.controller.snapshot(callId)?.state
+                        Log.i(TAG, "stage=push.accepted callId=$callId state=$state")
+                        // Ответили на другом устройстве: гасим только ещё звонящий звонок.
+                        // Если здесь уже connecting/active — это наш собственный accept, игнорируем.
+                        if (state == "ringing") runtime.controller.endCall(callId, "remote")
+                    }
                     else -> Wire.fail()
                 }
             } catch (error: Exception) {
@@ -50,6 +59,7 @@ class JackfieldPushReceiver : BroadcastReceiver() {
         private const val TAG = "JackfieldCallFlow"
         const val ACTION_INCOMING = "dev.albizia.jackfield.INCOMING"
         const val ACTION_END = "dev.albizia.jackfield.END"
+        const val ACTION_ACCEPTED = "dev.albizia.jackfield.ACCEPTED"
         /** Invoke from a provider service without creating a Flutter engine. Returns wire v1. */
         suspend fun reportIncomingCall(context: Context, payload: Map<String, Any?>): Map<String, Any?> = withContext(Dispatchers.IO) {
             try { Wire.success(JackfieldRuntime.get(context).controller.reportIncoming(payload).toWire()) }
